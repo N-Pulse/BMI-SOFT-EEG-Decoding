@@ -75,6 +75,16 @@ SELECTED_EVENT_ID_MAP = {
     'hand_open': 6,
 }
 
+EEG_LABELS = {
+    "hand_open": 1,
+    "hand_close": 2,
+    "wrist_flexion": 3,
+    "wrist_extension": 4,
+    "grasp": 5,
+    "pinch": 6,
+}
+
+
 CHANNELS = [
     # prefrontal
     'Fp1', 'Fp2',
@@ -248,32 +258,207 @@ def plot_event_distribution(events, save_dir):
 
 
 def plot_erps(raw, events, event_id_map, save_dir):
-    """Create ERP plots for each event type."""
+    """
+    Create ERPs, ERPs-mean/SEM, ERP topomaps, PSD-band topomaps,
+    and ERP-difference topomaps between paired conditions.
+    """
+
+    print("\nComputing ERPs per condition...")
+
     if events is None or len(events) == 0:
-        print( "No events to epoch — skipping ERP plots.")
+        print("No events found — skipping ERP plots.")
         return
 
     try:
-        epochs = mne.Epochs(raw, events, event_id=event_id_map,
-                            tmin=-0.5, tmax=0.8, preload=True,
-                            on_missing='ignore', baseline=(None, 0))
+        epochs = mne.Epochs(
+            raw, events, event_id=event_id_map,
+            tmin=-0.1, tmax=0.5, preload=True,
+            baseline=(None, 0),
+            on_missing='ignore'
+        )
     except Exception as e:
         print(f"Could not create epochs: {e}")
         return
 
+    # Count events
     df = pd.DataFrame(epochs.events, columns=["_", "__", "event_id"])
     counts = df["event_id"].value_counts()
     print(f"Event counts:\n{counts}")
 
-    for label, eid in event_id_map.items():
-        if eid not in counts.index:
-            print(f"No epochs found for event '{label}', skipping.")
+    # Times for topomaps of electrode activity for the average ERP per condition
+    TOPO_TIMES = [0.0, 0.1, 0.2, 0.3]
+
+    # container for evokeds of each condition
+    all_evokeds = {}
+
+    # LOOP over labels for each condition to extract ERPs and make relevant plots
+    for label in event_id_map.keys():
+
+        n_ep = len(epochs[label])
+
+        if n_ep == 0:
+            print(f"No epochs for {label}, skipping.")
             continue
-        evoked = epochs[label].average()
-        fig = evoked.plot(spatial_colors=True, show=False)
-        fig.savefig(save_dir / f"erp_{label}.png", dpi=150, bbox_inches="tight")
+
+        print(f" → ERP for {label}")
+
+        ep = epochs[label]
+        evoked = ep.average()
+
+        # save evoked for the contrasts performed later
+        all_evokeds[label] = evoked.copy()
+
+        # BUTTERFLY PLOT of the electrode activity for the conditions
+        fig_butterfly = evoked.plot(
+            spatial_colors=True,
+            time_unit='s',
+            show=False
+        )
+        fig_butterfly.suptitle(f"ERP – {label}", fontsize=12)
+        fig_butterfly.savefig(save_dir / f"erp_{label}_butterfly.png",
+                              dpi=150, bbox_inches="tight")
+        plt.close(fig_butterfly)
+
+        # ERP mean + SEM
+        data = ep.get_data().mean(axis=1)
+        mean = data.mean(axis=0)
+        sem = data.std(axis=0) / np.sqrt(data.shape[0])
+
+        n_ep = data.shape[0]
+        mean_sem_val = float(np.mean(sem))
+        max_sem_val = float(np.max(sem))
+
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.plot(ep.times, mean, label="Mean ERP")
+        ax.fill_between(ep.times, mean - sem, mean + sem,
+                        alpha=0.3, label="SEM")
+        ax.axvline(0, color='k', linestyle='--')
+        ax.set_title(f"ERP Average – {label}")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Amplitude (V)")
+        ax.legend()
+
+        info_text = (
+            f"n_epochs = {n_ep}\n"
+            f"mean SEM = {mean_sem_val:.2e}\n"
+            f"max SEM = {max_sem_val:.2e}"
+        )
+        ax.text(0.98, 0.98, info_text, transform=ax.transAxes,
+                ha='right', va='top', fontsize=9,
+                bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'))
+
+        fig.savefig(save_dir / f"erp_{label}_mean_sem.png",
+                    dpi=150, bbox_inches="tight")
         plt.close(fig)
-        print(f"Saved ERP plot for {label} → {save_dir / f'erp_{label}.png'}")
+
+        # ERP TOPOMAPS at the previously defined time ponints
+        evoked_micro = evoked.copy()
+        evoked_micro._data *= 1e6
+
+        fig_topo = evoked_micro.plot_topomap(
+            TOPO_TIMES,
+            time_unit='s',
+            show=False,
+            scalings=1,
+            cmap='RdBu_r'
+        )
+        fig_topo.suptitle(f"Topomap – {label} (µV)", fontsize=12)
+        fig_topo.savefig(save_dir / f"erp_{label}_topomap.png",
+                         dpi=150, bbox_inches="tight")
+        plt.close(fig_topo)
+
+        # PSD BAND-POWER TOPOMAPS: for every frequency range, plot the spectral activity for the electrodes on the average signal of the ERP per condition
+        print(f"   • Computing PSD band powers for {label} ...")
+
+        from mne.time_frequency import psd_array_welch
+        
+        ep_data = ep.get_data()  
+        mean_signal = ep_data.mean(axis=0)  
+
+        n_times = mean_signal.shape[1]
+
+        psd, freqs = psd_array_welch(
+            mean_signal,
+            sfreq=raw.info['sfreq'],
+            fmin=1, fmax=45,
+            n_fft=n_times,
+            n_per_seg=n_times,
+            n_overlap=0,
+            verbose=False
+        )
+
+        bands = {
+            "delta": (1, 4),
+            "theta": (4, 8),
+            "alpha": (8, 12),
+            "beta":  (13, 30),
+            "gamma": (30, 45)
+        }
+
+        band_powers = {}
+        for band, (fmin, fmax) in bands.items():
+            idx = (freqs >= fmin) & (freqs <= fmax)
+            band_powers[band] = psd[:, idx].mean(axis=1)
+
+        fig = plt.figure(figsize=(12, 8))
+        fig.suptitle(f"PSD Band Topomaps – {label}", fontsize=14)
+
+        from mne.viz import plot_topomap
+
+        for i, (band, values) in enumerate(band_powers.items(), start=1):
+            ax = fig.add_subplot(2, 3, i)
+            fmin, fmax = bands[band]
+
+            plot_topomap(values, raw.info, axes=ax,
+                         show=False, cmap='Reds')
+            ax.set_title(f"{band} ({fmin}-{fmax} Hz)")
+
+        plt.tight_layout(rect=[0, 0, 1, 0.93])
+        fig.savefig(save_dir / f"psd_{label}_bands_topomap.png",
+                    dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+        print(f"   • Saved PSD band-power maps for {label}")
+
+    # finally use the previously defined ERP and contrast pairs to compute the ERP DIFFERENCE TOPOMAPS
+
+    CONTRASTS = [
+        ("hand_open", "hand_close"),
+        ("forearm_supination", "forearm_pronation"),
+        ("elbow_extension", "elbow_flexion")
+    ]
+
+    print("\nEvokeds available:", list(all_evokeds.keys()))
+
+    for cond1, cond2 in CONTRASTS:
+
+        if cond1 not in all_evokeds or cond2 not in all_evokeds:
+            print(f"Skipping contrast {cond1}–{cond2}, missing evoked.")
+            continue
+
+        ev1 = all_evokeds[cond1]
+        ev2 = all_evokeds[cond2]
+
+        diff = ev1.copy()
+        diff.data = ev1.data - ev2.data
+
+        diff_micro = diff.copy()
+        diff_micro._data *= 1e6
+
+        fig = diff_micro.plot_topomap(
+            TOPO_TIMES,
+            time_unit='s',
+            cmap='RdBu_r',
+            scalings=1,
+            show=False
+        )
+        fig.suptitle(f"ERP Difference: {cond1} − {cond2} (µV)", fontsize=12)
+
+        fig.savefig(save_dir / f"erp_diff_{cond1}_minus_{cond2}.png",
+                    dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+        print(f"   • Saved ERP difference topomap for {cond1} − {cond2}")
 
 
 # ------------------------------------------------
@@ -321,6 +506,7 @@ def preprocess_xdf_file(xdf_path: Path, dataset_root: Path = DATASET_DIR):
     # Run preprocessing pipeline
     raw_1020 = set_montage(raw, channels=CHANNELS, plot=True, save_dir=fig_dir) # standard 10-20 montage
     raw_filt = filter_data(raw_1020, save_dir=fig_dir) # band-pass + notch filtering
+
     plot_events_and_save(events, fs, raw_filt, save_dir=fig_dir) 
     ica = run_ica_and_save(raw_filt, save_dir=fig_dir)
 
@@ -400,12 +586,18 @@ if __name__ == "__main__":
 
         # Ameer
         
-        "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-001_eeg.xdf",
-        "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-002_eeg.xdf",
-        "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-003_eeg.xdf",
-        "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P001/ses-S001/eeg/sub-P001_ses-S001_task-Default_run-001_eeg.xdf",
-        "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-TEST1/ses-S001/eeg/sub-TEST1_ses-S001_task-Default_run-001_eeg.xdf",
+        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-001_eeg.xdf",
+        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-002_eeg.xdf",
+        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-003_eeg.xdf",
+        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P001/ses-S001/eeg/sub-P001_ses-S001_task-Default_run-001_eeg.xdf",
+        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-TEST1/ses-S001/eeg/sub-TEST1_ses-S001_task-Default_run-001_eeg.xdf",
         
+        # Davide
+        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-001_eeg.xdf",
+        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-002_eeg.xdf",
+        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-003_eeg.xdf",
+        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P001/ses-S001/eeg/sub-P001_ses-S001_task-Default_run-001_eeg.xdf",
+        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-TEST1/ses-S001/eeg/sub-TEST1_ses-S001_task-Default_run-001_eeg.xdf",
     ]
     build_dataset(xdf_list)
 

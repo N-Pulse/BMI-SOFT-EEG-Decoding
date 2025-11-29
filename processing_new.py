@@ -97,7 +97,7 @@ def decode_and_fuse_lsl_to_eeg_label(lsl_trigger_code):
     
     Returns:
         1 → hand_open
-        ...
+        etc ...
         6 → pinch
        -1 → discard (non-movement phase or unlisted movement)
     """
@@ -746,6 +746,6 @@ if __name__ == "__main__":
 
     base_directory = "sub-P005"
 
-    # xdf_list = get_xdf_file_list(base_directory) # will find all .xdf within directory
-    xdf_list = ["sub-P005/ses-S004/eeg/sub-P005_ses-S004_task-Default_run-001_eeg_down.xdf"]
+    xdf_list = get_xdf_file_list(base_directory) # will find all .xdf within directory
+    
     build_dataset(xdf_list)
