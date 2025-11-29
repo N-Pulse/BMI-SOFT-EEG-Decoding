@@ -11,7 +11,7 @@ Results:
   comparisons/<mode>/<model>_<features>/metrics.json etc.
 
 Usage:
-  python compare_training.py --data dataset/EEG_clean/processed/simplified/hand --fs 300 --base_outdir comparisons/hand
+  python compare_training.py --data NEW_dataset/EEG_clean/processed/simplified/hand_dir --fs 300 --base_outdir comparisons/hand_dir
 """
 
 from pathlib import Path
