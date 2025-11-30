@@ -47,16 +47,15 @@ from mne.viz import plot_topomap
 # -------------------------------------------------------------
 
 DATASET_DIR = Path("NEW_dataset/EEG_clean")
-# DATASET_DIR.mkdir(parents=True, exist_ok=True) 
 
-# 6-class EEG labels
+# 6-class EEG labels restored based on logical motor groups
 EEG_LABELS = {
     "hand_open":      1,
     "hand_close":     2,
     "wrist_flexion":  3,
     "wrist_extension":4,
-    "grasp":          5,
-    "pinch":          6,
+    # "fine_open":          5, # Grasp object codes
+    # "fine_closed":          6, # Pinch grasp codes
 }
 
 # Used both for ERP plots and Epochs/NPZ
@@ -80,7 +79,7 @@ PLOTTING_CHANNELS = [
 CONTRASTS = [
     ("hand_open",      "hand_close"),
     ("wrist_extension","wrist_flexion"),
-    ("grasp",          "pinch"),
+    # ("fine_open",          "fine_closed"), # Restored fine motor contrast
 ]
 
 # -------------------------------------------------------------
@@ -89,17 +88,8 @@ CONTRASTS = [
 
 def decode_and_fuse_lsl_to_eeg_label(lsl_trigger_code):
     """
-    Decodes the original LSL trigger code to get the movement_code,
-    and fuses it into one of the 6 coarse EEG classes.
-
-    LSL Format: phase*10000 + arm*1000 + baseline*100 + movement_code
-    Protocol: PHASE (odd numbers only): cue=1, prep=3, move=5, return=7, iti=9
-    
-    Returns:
-        1 → hand_open
-        etc ...
-        6 → pinch
-       -1 → discard (non-movement phase or unlisted movement)
+    Decodes the LSL trigger code and maps the movement_code (1-27)
+    into one of the 6 coarse EEG classes.
     """
     label = int(lsl_trigger_code)
     
@@ -113,34 +103,39 @@ def decode_and_fuse_lsl_to_eeg_label(lsl_trigger_code):
     baseline_label= (label - phase_label * 10000 - arm_label * 1000) // 100
     movement_label= label - phase_label * 10000 - arm_label * 1000 - baseline_label * 100
     
-    # Only movement phases (5 for 'move' is the most critical)
-    if phase_label not in (5,): 
+    # Phase Check: Only movement phases (3 for 'move' is the correct code)
+    if phase_label != 3: 
         return -1
     
-    # Map Movement Code to 6 EEG Classes (based on Protocol)
-    if movement_label in (1,2): 
-        # 1: openhand_slow_3sec
-        # 2: open thumb
+    # --- New Mapping Based on Codes 1-27 ---
+    
+    # 1. HAND OPEN (Includes all open commands)
+    if movement_label in (1, 2, 7): 
+        # 1, 2 (open hand slow/fast); 7 (open 4 fingers)
         return EEG_LABELS["hand_open"]
         
-    elif movement_label in (2,3,6): 
-        # 2, 3: closetofist_allfingerstogether
-        # 6: close_onlythumb_3sec
+    # 2. HAND CLOSE (Includes all gross close commands and single finger closures)
+    elif movement_label in (3, 4, 5, 6, 8): 
+        # 3-6 (close to fist); 8 (close 4 fingers)
         return EEG_LABELS["hand_close"]
         
-    elif movement_label in (4, 5): # wrist_palmarflexion
+    # 3. WRIST FLEXION (Palmar Flexion)
+    elif movement_label in (11, 12): 
         return EEG_LABELS["wrist_flexion"]
         
-    elif movement_label in (8, 9): # wrist_dorsiflexion
+    # 4. WRIST EXTENSION (Dorsiflexion)
+    elif movement_label in (13, 14): 
         return EEG_LABELS["wrist_extension"]
         
-    elif movement_label in (10, 11): # grasp_donut/cup
-        return EEG_LABELS["grasp"]
+    # # 5. FINE OPEN 
+    # elif movement_label in (9,23,24,25,26,27): 
+    #     return EEG_LABELS["fine_open"]
         
-    elif movement_label == 12: # grasping_pinching_pen
-        return EEG_LABELS["pinch"]
+    # # 6. Fine Closed 
+    # elif movement_label  in(10,18,19,20,21,22): 
+    #     return EEG_LABELS["fine_closed"]
         
-    return -1 # Discard unlisted or irrelevant movements
+    return -1 # Discard any unmapped codes
 
 # -------------------------------------------------------------
 # STREAM HANDLING

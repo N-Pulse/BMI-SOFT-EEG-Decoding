@@ -48,7 +48,7 @@ def main():
 
     # --- Detect mode name from filename ---
     # Example filename: sub-P019_ses-S001_task-Default_run-003_eeg_epochs_hand_binary.npz
-    mode_match = re.search(r'(hand_dir|grasp_type|hand_vs_wrist|wrist_dir)', data_path.stem)
+    mode_match = re.search(r'(hand_dir|fine_type|wrist_dir)', data_path.stem)
     mode_name = mode_match.group(1) if mode_match else "default"
 
     base_outdir = Path(args.base_outdir) / mode_name
@@ -89,7 +89,7 @@ def main():
         print(f"\n--- Training {run_name} ---")
 
         cmd = [
-            'python', 'train.py',
+            'python', 'train_new.py',
             '--data', str(args.data),
             '--features', feature_choice,
             '--model', model,

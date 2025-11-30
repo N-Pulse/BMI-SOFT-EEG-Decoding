@@ -4,7 +4,7 @@ Simplify multi-class EEG labels (6 classes) into binary or grouped versions.
 Each simplified file is saved into a subdirectory named after the chosen mode.
 
 Usage:
-  python simplify_labels.py --data dataset/EEG_clean/processed --mode hand_vs_wrist
+  python simplify_labels_new.py --data NEW_dataset/EEG_clean/processed --mode wrist_dir
 """
 
 from pathlib import Path
@@ -31,19 +31,12 @@ MAPS = {
     },
     
     # 3. Classification based on FINE GRASP TYPE
-    "grasp_type": {
-        "grasp":     [5],  # grasp
-        "pinch":     [6],  # pinch
-    },
-
-    # 4. Classification: Differentiate Gross Hand movements vs. Wrist movements
-    "hand_vs_wrist": {
-        "hand":      [1, 2], # hand_open, hand_close
-        "wrist":     [3, 4], # wrist_flexion, wrist_extension
+    "fine_type": {
+        "fine_open":     [5],  # fine_open
+        "fine_closed":     [6],  # fine_closed
     },
     
 }
-
 
 # ------------------------------------------------------------
 # Simplify function
