@@ -25,8 +25,8 @@ parser.add_argument("--base", type=str, default="all",
 parser.add_argument("--cv", type=int, default=5, help="Number of cross-validation folds")
 args = parser.parse_args()
 
-modes = ["hand", "elbow", "forearm"]
-base_data = Path("dataset/EEG_clean/processed")
+modes = ["grasp_type", "hand_dir", "hand_vs_wrist", "wrist_dir"]
+base_data = Path("NEW_dataset/EEG_clean/processed")
 base_out = Path("comparisons")
 FS = "300"  # Hz
 
@@ -39,7 +39,6 @@ if args.base != "all":
         raise FileNotFoundError(f"❌ Base dataset not found: {base_path}")
 
     print(f"\n🎯 Using single base dataset: {base_path.name}")
-    print("🧩 Simplifying into hand/elbow/forearm binary datasets...")
 
     # Run simplify_labels.py for all modes
     for mode in modes:
