@@ -31,8 +31,8 @@ Outputs:
       confusion_matrix.png, feature_names.json (if available)
 
 Usage examples:
-  # Process and train on a simplified hand movement dataset (Assumes fs=512)
-  python train.py --data NEW_dataset/EEG_clean/processed/simplified/hand_dir/ --features bandpower --model lda --fs 512
+  python train.py --data features/session01.npz --features none --model lda
+  python train.py --data epochs_dir/ --features bandpower --model logreg
 
 """
 from __future__ import annotations
@@ -139,8 +139,7 @@ class Bandpower(TransformerMixin, BaseEstimator):
     def __init__(self, fs: float, bands: List[Tuple[float, float]] | None = None,
                  nperseg: int = 256, noverlap: int = 128, eps: float = 1e-12):
         self.fs = fs
-        # ADAPTATION: Use Alpha (8-12Hz) and Beta (13-30Hz) as default motor bands
-        self.bands = bands or [(4, 8), (8, 12), (13, 30), (30, 45)]
+        self.bands = bands or [(4,7), (8,13), (13,30), (30,45)]
         self.nperseg = nperseg
         self.noverlap = noverlap
         self.eps = eps
@@ -152,11 +151,9 @@ class Bandpower(TransformerMixin, BaseEstimator):
         # Create names
         n_ch = X.shape[1]
         names = []
-        # ADAPTATION: Use channel index since names are not passed to train.py
         for ch in range(n_ch):
             for (lo, hi) in self.bands:
-                # Format names clearly for feature selection later
-                names.append(f"ch{ch}_bp_{lo:g}-{hi:g}Hz")
+                names.append(f"ch{ch}_bp_{lo:g}-{hi:g}")
         self.feature_names_ = names
         return self
 
@@ -167,11 +164,11 @@ class Bandpower(TransformerMixin, BaseEstimator):
         out = np.zeros((n_epochs, n_ch * len(self.bands)), dtype=np.float32)
         for i in range(n_epochs):
             # PSD per channel
+            # Note: welch returns (f, Pxx)
             for ch in range(n_ch):
                 f, Pxx = welch(X[i, ch, :], fs=self.fs, nperseg=self.nperseg, noverlap=self.noverlap)
                 for b_idx, (lo, hi) in enumerate(self.bands):
                     mask = (f >= lo) & (f < hi)
-                    # Integrate power (area under the curve)
                     bp = np.trapz(Pxx[mask], f[mask])
                     out[i, ch*len(self.bands) + b_idx] = np.log(bp + self.eps)
         return out
@@ -198,17 +195,15 @@ class CSPFeatures(TransformerMixin, BaseEstimator):
             raise ImportError("mne not available. Install MNE to use CSP.")
         self.n_components = n_components
         self.reg = reg
-        # ADAPTATION: Use standard motor ERD/ERS band for filtering
-        self.l_freq = 8.0
-        self.h_freq = 30.0
+        self.l_freq = l_freq
+        self.h_freq = h_freq
         self.sfreq = sfreq
-        # The MNE CSP object handles the transformation internally
         self._csp = CSP(n_components=n_components, reg=reg, log=True, cov_est='concat')
 
     def fit(self, X, y):
         if X.ndim != 3:
             raise ValueError("CSP expects raw epochs: (n_epochs, n_channels, n_times)")
-        # CSP filter implicitly acts as a feature extractor here
+        # Optional bandpass can be done upstream; here we assume prefiltered
         self._csp.fit(X, y)
         return self
 
@@ -226,11 +221,6 @@ def build_pipeline(args, fs: float | None, n_channels: int | None) -> Tuple[Pipe
     # Feature stage
     feature_steps = []
     if args.model == 'csp_lda':
-        # Check for MNE again, just in case
-        if not _HAS_MNE:
-             raise ImportError("mne not available. Install MNE to use CSP.")
-        
-        # CSP expects raw 3D data and performs its own filtering/feature extraction
         feat = CSPFeatures(n_components=args.csp_components)
         feature_steps.append(('csp', feat))
     else:
@@ -247,13 +237,10 @@ def build_pipeline(args, fs: float | None, n_channels: int | None) -> Tuple[Pipe
 
     # Classifier stage
     if args.model == 'lda' or args.model == 'csp_lda':
-        # LDA with automatic shrinkage is a robust default for BCI
         clf = LinearDiscriminantAnalysis(solver='lsqr', shrinkage='auto')
     elif args.model == 'logreg':
-        # LogReg with balanced class weight to handle unequal trial counts
         clf = LogisticRegression(max_iter=500, n_jobs=None, C=args.C, class_weight='balanced')
     elif args.model == 'lsvm':
-        # Linear SVM with balanced class weight
         clf = LinearSVC(C=args.C, class_weight='balanced')
     else:
         raise ValueError(f"Unknown model: {args.model}")
@@ -261,7 +248,7 @@ def build_pipeline(args, fs: float | None, n_channels: int | None) -> Tuple[Pipe
     steps = []
     if feature_steps:
         steps.extend(feature_steps)
-    # Scale if features are not already standardized; essential for linear models
+    # Scale if features are not already standardized; safe for all linear models
     steps.append(('scaler', StandardScaler()))
     steps.append(('clf', clf))
 
@@ -274,13 +261,10 @@ def build_pipeline(args, fs: float | None, n_channels: int | None) -> Tuple[Pipe
 # ------------------------------
 
 def evaluate_and_report(y_true, y_pred, outdir: Path) -> Dict[str, float]:
-    # Calculate metrics
     acc = accuracy_score(y_true, y_pred)
     bacc = balanced_accuracy_score(y_true, y_pred)
-    # Macro F1 is useful for multi-class/imbalanced data
     f1m = f1_score(y_true, y_pred, average='macro')
 
-    # Plot confusion matrix
     cm = confusion_matrix(y_true, y_pred)
     fig = plt.figure(figsize=(4,4))
     plt.imshow(cm, interpolation='nearest')
@@ -305,10 +289,10 @@ def evaluate_and_report(y_true, y_pred, outdir: Path) -> Dict[str, float]:
 
 def parse_args():
     p = argparse.ArgumentParser(description='Minimal motor-decoder training script')
-    p.add_argument('--data', type=str, required=True, help='Path to .npz or a directory of .npz bundles (often the simplified/ folder).')
+    p.add_argument('--data', type=str, required=True, help='Path to .npz or a directory of .npz bundles')
     p.add_argument('--features', type=str, default='bandpower', choices=['bandpower', 'none'], help='Featureization method')
     p.add_argument('--model', type=str, default='lda', choices=['lda', 'logreg', 'lsvm', 'csp_lda'], help='Classifier / pipeline')
-    p.add_argument('--fs', type=float, default=None, help='Sampling rate (Hz). Required if features=bandpower or csp_lda, e.g., 512.')
+    p.add_argument('--fs', type=float, default=None, help='Sampling rate (Hz). Required if features=bandpower and input is epochs (3D).')
     p.add_argument('--test_size', type=float, default=0.2, help='Proportion for test split (GroupShuffleSplit)')
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--C', type=float, default=1.0, help='Regularization for logreg/lsvm')
@@ -327,18 +311,14 @@ def main():
 
     X, y, groups = load_dataset(data_path)
 
-    # Sanity check for sampling rate if 3D data is provided
+    # If using bandpower, and X is 3D, fs is required
     fs = args.fs
-    is_3d_input = X.ndim == 3
-    if is_3d_input and (args.features == 'bandpower' or args.model == 'csp_lda') and fs is None:
-        raise ValueError('The --fs argument (sampling rate) is required for featureization on raw epochs (3D data).')
-    if args.features == 'bandpower' and not is_3d_input:
+    if args.features == 'bandpower' and X.ndim != 3:
         raise ValueError('features=bandpower expects raw epochs (n, ch, t). Got 2D features. Use --features none.')
 
-    pipe, feature_names = build_pipeline(args, fs=fs, n_channels=X.shape[1] if is_3d_input else None)
+    pipe, feature_names = build_pipeline(args, fs=fs, n_channels=X.shape[1] if X.ndim == 3 else None)
 
     # ---------- Splitting logic ----------
-    # Prefer GroupShuffleSplit to prevent data leakage across runs/sessions
     n_groups = len(np.unique(groups))
 
     if not args.ignore_groups and n_groups >= 2:
@@ -367,12 +347,6 @@ def main():
     # Train/evaluate once with the chosen split
     Xtr, Xte = X[tr_idx], X[te_idx]
     ytr, yte = y[tr_idx], y[te_idx]
-    
-    # Check for empty split
-    if Xtr.shape[0] == 0 or Xte.shape[0] == 0:
-        print("Error: Training or testing set is empty after splitting. Check --test_size and group distribution.")
-        return
-
     pipe.fit(Xtr, ytr)
     yhat = pipe.predict(Xte)
     metrics = evaluate_and_report(yte, yhat, outdir)
@@ -384,7 +358,6 @@ def main():
     # Capture feature names if available (after fit, bandpower fills names)
     names = None
     try:
-        # Look for bandpower step's feature names
         if hasattr(pipe.named_steps.get('bandpower', None), 'feature_names_'):
             names = pipe.named_steps['bandpower'].feature_names_
     except Exception:
