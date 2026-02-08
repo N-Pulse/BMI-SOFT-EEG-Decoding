@@ -24,7 +24,7 @@ The workflow is uses three main scripts:
 
 ### 📂 Data & Input
 
-This repository contains data from multiple acquisition phases, including 2024 data (`archives/2024/EEG`), and more recent 2025 data (`sub-P005/`). 
+This repository contains data from multiple acquisition phases, including 2024 data (`archives/2024/EEG`), and more recent 2025 data (`sub-P005/` which should be at same level as the processing files). 
 
   * **Input Data:** Raw `.xdf` files are organized by subject and session.
   * **Output Data:** Cleaned epochs (`.npz`) and processed metadata are saved into the `EEG_clean/` directory.
@@ -36,6 +36,8 @@ This repository contains data from multiple acquisition phases, including 2024 d
 ###  Getting Started
 
 To execute the full pipeline and generate a first trained model:
+
+
 
 1.  **Run Preprocessing:** Start by cleaning the raw signals.
     ```bash
