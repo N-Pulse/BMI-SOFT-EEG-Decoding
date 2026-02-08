@@ -37,14 +37,14 @@ To execute the full pipeline and generate a first trained model:
     ```
 2.  **Run Preprocessing:** Clean the raw signals.
     ```bash
-    python processing_new.py
+    python processing.py
     ```
-3.  **Run Simplification:** Create the binary classification sets (e.g., for hand movements).
+3.  **Run Simplification:** Create the binary classification sets.
     ```bash
-    python simplify_labels.py --data EEG_clean/processed/ --mode hand_dir
+    python simplify_labels.py --data EEG_clean/processed/ --mode elbow
     ```
 4.  **Run Training:** Train a baseline model on the simplified data.
     ```bash
-    python train.py --data EEG_clean/processed/simplified/hand_dir/ --features bandpower --model lda --fs 512
+    python train.py --data EEG_clean/processed/simplified/elbow/ --features none --model lda
     ```
 
