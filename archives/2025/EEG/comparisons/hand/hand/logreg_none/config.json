@@ -1,0 +1,16 @@
+{
+  "data": "EEG_clean/processed/simplified/hand",
+  "features": "none",
+  "model": "logreg",
+  "fs": 300.0,
+  "test_size": 0.2,
+  "seed": 42,
+  "C": 1.0,
+  "csp_components": 4,
+  "outdir": "comparisons/hand/hand/logreg_none",
+  "ignore_groups": false,
+  "cv": 0,
+  "n_samples": 30,
+  "n_train": 24,
+  "n_test": 6
+}

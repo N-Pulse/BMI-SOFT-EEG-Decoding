@@ -1,0 +1,6 @@
+mode,model,features,status,accuracy,balanced_accuracy,f1_macro
+elbow,logreg,none,failed,,,
+elbow,lsvm,none,failed,,,
+elbow,logreg,bandpower,failed,,,
+elbow,lsvm,bandpower,failed,,,
+elbow,csp_lda,bandpower,failed,,,

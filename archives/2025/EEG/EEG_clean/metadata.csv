@@ -1,0 +1,6 @@
+file,sfreq,n_channels,n_events,output_path
+sub-P019_ses-S001_task-Default_run-001_eeg.xdf,300.0,19,0,EEG_clean/processed/sub-P019_ses-S001_task-Default_run-001_eeg_raw.fif
+sub-P019_ses-S001_task-Default_run-002_eeg.xdf,300.0,19,8,EEG_clean/processed/sub-P019_ses-S001_task-Default_run-002_eeg_raw.fif
+sub-P019_ses-S001_task-Default_run-003_eeg.xdf,300.0,19,105,EEG_clean/processed/sub-P019_ses-S001_task-Default_run-003_eeg_raw.fif
+sub-P001_ses-S001_task-Default_run-001_eeg.xdf,300.0,19,20,EEG_clean/processed/sub-P001_ses-S001_task-Default_run-001_eeg_raw.fif
+sub-TEST1_ses-S001_task-Default_run-001_eeg.xdf,300.0,19,3,EEG_clean/processed/sub-TEST1_ses-S001_task-Default_run-001_eeg_raw.fif

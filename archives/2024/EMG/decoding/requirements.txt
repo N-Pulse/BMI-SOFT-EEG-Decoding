@@ -1,0 +1,12 @@
+numpy
+scipy
+pandas
+scikit-learn
+matplotlib
+seaborn
+pyserial
+board
+keyboard
+adafruit-blinka
+adafruit-circuitpython-ads1x15
+adafruit-circuitpython-mcp3xxx

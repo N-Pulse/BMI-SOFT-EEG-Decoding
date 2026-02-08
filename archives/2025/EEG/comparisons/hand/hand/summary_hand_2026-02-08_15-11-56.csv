@@ -1,0 +1,6 @@
+mode,model,features,status,accuracy,balanced_accuracy,f1_macro
+hand,logreg,none,failed,,,
+hand,lsvm,none,failed,,,
+hand,logreg,bandpower,failed,,,
+hand,lsvm,bandpower,failed,,,
+hand,csp_lda,bandpower,failed,,,
