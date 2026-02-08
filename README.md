@@ -12,7 +12,7 @@ The primary goal is to transform raw EEG signals into machine learning-ready fea
 
 The workflow is uses three main scripts:
 
-1.  **`processing.py` or `processing_new.py`:**
+1.  **`processing.py`:**
       * Handles **signal preprocessing** (filtering, referencing, ICA) and converts raw LSL markers into the final integer labels.
       * Generates plots for quality control and feature visualization.
 2.  **`simplify_labels.py`:**
@@ -24,10 +24,10 @@ The workflow is uses three main scripts:
 
 ### 📂 Data & Input
 
-This repository contains data from multiple acquisition phases, including 2024 data (`archives/2024/EEG`), and more recent 2025 data (`sub-P005/`).
+This repository contains data from multiple acquisition phases, including 2024 data (`archives/2024/EEG`), and more recent 2025 data (`sub-P005/`). 
 
   * **Input Data:** Raw `.xdf` files are organized by subject and session.
-  * **Output Data:** Cleaned epochs (`.npz`) and processed metadata are saved into the `NEW_dataset/` or `OLD_dataset/` directory.
+  * **Output Data:** Cleaned epochs (`.npz`) and processed metadata are saved into the `EEG_clean/` directory.
 
 
 
@@ -41,11 +41,13 @@ To execute the full pipeline and generate a first trained model:
     ```bash
     python processing_new.py
     ```
-2.  **Run Simplification:** Create the binary classification sets (e.g., for hand movements).
+2.  **Run Simplification:** Create the binary classification sets (e.g., for hand movements, based on codes from the acquisition team).
     ```bash
-    python simplify_labels.py --data NEW_dataset/EEG_clean/processed/ --mode hand_dir
+    python simplify_labels.py --data EEG_clean/processed/ --mode hand_dir
     ```
 3.  **Run Training:** Train a baseline model on the simplified data.
     ```bash
-    python train.py --data NEW_dataset/EEG_clean/processed/simplified/hand_dir/ --features bandpower --model lda --fs 512
+    python train.py --data EEG_clean/processed/simplified/hand_dir/ --features bandpower --model lda --fs 512
     ```
+
+To run the processing on 2024 data, run the following steps under the `archives/2025/EEG` directory.

@@ -10,8 +10,11 @@ Results:
   comparisons/<mode>/summary_<timestamp>.csv
   comparisons/<mode>/<model>_<features>/metrics.json etc.
 
+Note: 
+    Make sure to run simplify_labels.py first to create the all simplified datasets in comparisons/<mode>/ before running this script.
+
 Usage:
-  python compare_training.py --data dataset/EEG_clean/processed/simplified/hand --fs 300 --base_outdir comparisons/hand
+  python compare_training.py --data EEG_clean/processed/simplified/hand_dir --fs 300 --base_outdir comparisons/hand_dir
 """
 
 from pathlib import Path
@@ -48,7 +51,7 @@ def main():
 
     # --- Detect mode name from filename ---
     # Example filename: sub-P019_ses-S001_task-Default_run-003_eeg_epochs_hand_binary.npz
-    mode_match = re.search(r'(hand|leftright|elbow|forearm)', data_path.stem)
+    mode_match = re.search(r'(hand_dir|fine_type|wrist_dir)', data_path.stem)
     mode_name = mode_match.group(1) if mode_match else "default"
 
     base_outdir = Path(args.base_outdir) / mode_name
@@ -76,7 +79,7 @@ def main():
             continue
 
         if model == 'csp_lda':
-            feature_choice = 'bandpower'  # CSP always uses bandpower
+            feature_choice = 'none'  # CSP always uses raw data
         else:
             feature_choice = feat
 

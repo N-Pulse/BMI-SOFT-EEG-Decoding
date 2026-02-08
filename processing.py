@@ -1,40 +1,33 @@
 # ====================================================================
-# EEG Dataset Preprocessing 
+# NEW EEG Dataset Preprocessing (71-channel eegoSports)
 # ====================================================================
-
+#
 # Project : BMI-SOFT Signal Processing ML
-# Created : 2025-10
-# File    : processing.py
-
+# Created : 2025-11
+# File    : processing_new.py
+#
 # Description
 # -----------
-# This script builds a centralized, clean EEG dataset from multiple .XDF recordings.
-
-# It performs standardized preprocessing for each recording:
-#   • Detects the correct EEG stream automatically (based on channel count)
-#   • Converts µV → V and creates an MNE Raw object
-#   • Sets standard 10–20 electrode montage
-#   • Applies band-pass (1–50 Hz) and notch (50 Hz) filtering
-#   • Runs ICA for artifact inspection (and future automated cleaning)
-#   • Extracts event markers and builds epochs
-#   • Generates diagnostic plots:
-#         - PSD before/after filtering
-#         - Montage layout
-#         - Raw signal with event markers
-#         - Event count histogram
-#         - ERP plots per condition (left, right, foot)
-#   • Saves the cleaned data as .fif files and compiles a metadata registry
+# This script preprocesses the NEW 71-channel eegoSports EEG recordings
+# with BMI protocol triggers and builds a clean ML-ready dataset.
 #
-# Outputs
-# -------
-# dataset/
-# ├── EEG_clean/
-# │   ├── processed/       → preprocessed .fif files
-# │   ├── figures/         → diagnostic and ERP plots per recording
-# │   └── metadata.csv     → summary of all processed files
+# It does:
+#   • Loads .xdf files (EEG + trigger stream)
+#   • Keeps all EEG channels except AUX/TRIGGER
+#   • standard_1020 montage, average EEG reference
+#   • Band-pass (1–50 Hz) and notch (50, 100 Hz) filtering
+#   • ICA (for inspection)
+#   • Trigger --> Movement Code --> 6 coarse EEG classes:
+#         1: hand_open
+#         2: hand_close
+#         3: wrist_flexion
+#         4: wrist_extension
+#         5: grasp
+#         6: pinch
+#   • Builds epochs using only motor-relevant channels
+#   • Generates figures and saves epochs bundle (.npz) for ML.
 #
 # ====================================================================
-
 
 import mne
 import numpy as np
@@ -44,203 +37,346 @@ from pathlib import Path
 import csv
 import pandas as pd
 import seaborn as sns
+import re
+import os
+from mne.time_frequency import psd_array_welch
+from mne.viz import plot_topomap 
 
-# -------------------------------------------
-# Global constants
-# -------------------------------------------
+# -------------------------------------------------------------
+# CONFIG (NEW DATA)
+# -------------------------------------------------------------
 
-DATASET_DIR = Path("dataset/EEG_clean")            # Root directory for processed dataset
-EVENT_ID_MAP = event_dict = {
-            'unknown?': 0,
-            'test': 99,
-            'start': 88,
-            'baseline' : 77, 
+DATASET_DIR = Path("EEG_clean")
 
-            # elbow flexion, elbow extension, forearm supination, forearm pronation, hand close, and hand open
-            'elbow_flexion' : 1,
-            'elbow_extension' : 2,
-            'forearm_supination' : 3,
-            'forearm_pronation' : 4,
-            'hand_close' : 5,
-            'hand_open' : 6
-            }
-
-# Choose a subset to analyze 
-SELECTED_EVENT_ID_MAP = {
-    'elbow_flexion': 1,
-    'elbow_extension': 2,
-    'forearm_supination' : 3,
-    'forearm_pronation' : 4,
-    'hand_close': 5,
-    'hand_open': 6,
-}
-
+# 6-class EEG labels restored based on logical motor groups
 EEG_LABELS = {
-    "hand_open": 1,
-    "hand_close": 2,
-    "wrist_flexion": 3,
-    "wrist_extension": 4,
-    "grasp": 5,
-    "pinch": 6,
+    "hand_open":      1,
+    "hand_close":     2,
+    "wrist_flexion":  3,
+    "wrist_extension":4,
+    # "fine_open":          5, # Grasp object codes
+    # "fine_closed":          6, # Pinch grasp codes
 }
 
+# Used both for ERP plots and Epochs/NPZ
+SELECTED_EVENT_ID_MAP = EEG_LABELS.copy()
 
-CHANNELS = [
-    # prefrontal
-    'Fp1', 'Fp2',
-    # frontal
-    'F7', 'F3', 'Fz', 'F4', 'F8',
-    # central and temporal
-    'T3', 'C3', 'Cz', 'C4', 'T4',
-    # parietal
-    'T5', 'P3', 'Pz', 'P4', 'T6',
-    # occipital
-    'O1', 'O2',
+# Motor-related subset for plotting & epochs (must match XDF labels)
+PLOTTING_CHANNELS = [
+    # Premotor / SMA
+    "FC1", "FC2", "FC3", "FC4", "FCZ",
+    # Sensorimotor strip
+    "C1", "C2", "C3", "C4", "CZ",
+    # Centro-parietal
+    "CP1", "CP2", "CP3", "CP4",
+    # Frontal surround
+    "F3", "FZ", "F4",
+    # Parietal surround
+    "P3", "PZ", "P4",
 ]
 
+# Contrasts for ERP difference topomaps
+CONTRASTS = [
+    ("hand_open",      "hand_close"),
+    ("wrist_extension","wrist_flexion"),
+    # ("fine_open",          "fine_closed"), # Restored fine motor contrast
+]
 
+# -------------------------------------------------------------
+# TRIGGER MAPPING : LSL → Movement Code → 6 EEG classes
+# -------------------------------------------------------------
 
-# -------------------------------------------
-# Helper functions
-# -------------------------------------------
-def find_eeg_stream(streams, expected_channels=24):
+def decode_and_fuse_lsl_to_eeg_label(lsl_trigger_code):
     """
-    Automatically find the EEG stream based on number of channels.
-    Returns the first stream with the expected number of channels.
+    Decodes the LSL trigger code and maps the movement_code (1-27)
+    into one of the 6 coarse EEG classes.
     """
-    eeg_candidates = []
-    for s in streams:
-        try:
-            n_ch = len(s["info"]["desc"][0]["channels"][0]["channel"])
-        except Exception:
-            n_ch = 0
-        if n_ch == expected_channels:
-            eeg_candidates.append(s)
+    label = int(lsl_trigger_code)
+    
+    # Special codes (rest / baseline / garbage)
+    if label in (9701, 9702, 8888, 8899, 9999):
+        return -1
 
-    if not eeg_candidates:
-        available = [
-            (s["info"]["name"][0], len(s["info"]["desc"][0]["channels"][0]["channel"]))
-            for s in streams if "desc" in s["info"]
-        ]
-        raise ValueError(
-            f"No EEG stream found with {expected_channels} channels. "
-            f"Available streams: {available}"
-        )
+    # Decode components
+    phase_label   = label // 10000
+    arm_label     = (label - phase_label * 10000) // 1000
+    baseline_label= (label - phase_label * 10000 - arm_label * 1000) // 100
+    movement_label= label - phase_label * 10000 - arm_label * 1000 - baseline_label * 100
+    
+    # Phase Check: Only movement phases (3 for 'move' is the correct code)
+    if phase_label != 3: 
+        return -1
+    
+    # --- New Mapping Based on Codes 1-27 ---
+    
+    # 1. HAND OPEN (Includes all open commands)
+    if movement_label in (1, 2, 7): 
+        # 1, 2 (open hand slow/fast); 7 (open 4 fingers)
+        return EEG_LABELS["hand_open"]
+        
+    # 2. HAND CLOSE (Includes all gross close commands and single finger closures)
+    elif movement_label in (3, 4, 5, 6, 8): 
+        # 3-6 (close to fist); 8 (close 4 fingers)
+        return EEG_LABELS["hand_close"]
+        
+    # 3. WRIST FLEXION (Palmar Flexion)
+    elif movement_label in (11, 12): 
+        return EEG_LABELS["wrist_flexion"]
+        
+    # 4. WRIST EXTENSION (Dorsiflexion)
+    elif movement_label in (13, 14): 
+        return EEG_LABELS["wrist_extension"]
+        
+    # # 5. FINE OPEN 
+    # elif movement_label in (9,23,24,25,26,27): 
+    #     return EEG_LABELS["fine_open"]
+        
+    # # 6. Fine Closed 
+    # elif movement_label  in(10,18,19,20,21,22): 
+    #     return EEG_LABELS["fine_closed"]
+        
+    return -1 # Discard any unmapped codes
 
-    if len(eeg_candidates) > 1:
-        names = [s["info"]["name"][0] for s in eeg_candidates]
-        print(f"Multiple {expected_channels}-channel streams found: {names}. Using the first one.")
+# -------------------------------------------------------------
+# STREAM HANDLING
+# -------------------------------------------------------------
 
-    eeg_stream = eeg_candidates[0]
-    print(f"Detected EEG stream: {eeg_stream['info']['name'][0]} ({expected_channels} channels)")
+def get_eeg_stream(streams):
+    # identify the one with most channels as EEG
+    eeg_stream = max(streams, key=lambda s: int(s['info']['channel_count'][0]))
     return eeg_stream
 
+def get_trigger_stream(streams):
+    # identify the one with 'marker' or 'stim' in type as trigger
+    # check if the min amount of channels is unique or not if. not unique make sure that it has data in time_series
+    
+    # check i fmultiple streams have the same min amount of channels   
+    candidates = [s for s in streams if int(s['info']['channel_count'][0]) == min(int(st['info']['channel_count'][0]) for st in streams)]
+    if len(candidates) == 1:
+        return candidates[0]
+    else:
+        for s in candidates:
+            return max(candidates, key=lambda s: len(s["time_series"]))
 
+    
 
-def extract_mne_info_and_events(streams, eeg_name="EEG-stream", stim_name="stimulus_stream"):
-    """Extract EEG info and events from XDF streams."""
-    # --- Find EEG stream ---
-    eeg_stream = find_eeg_stream(streams, expected_channels=24)
-    if eeg_stream is None:
-        raise ValueError(f"No stream named '{eeg_name}' found.")
+def get_xdf_file_list(base_dir):
+    """
+    Scans a directory (and all its subdirectories) for files ending in '.xdf'.
 
-    ch_names = [ch["label"][0] for ch in eeg_stream["info"]["desc"][0]["channels"][0]["channel"]]
-    samp_frq = float(eeg_stream["info"]["nominal_srate"][0])
+    Args:
+        base_dir (str or Path): The root directory to start searching from.
+
+    Returns:
+        list: A list of Path objects, each pointing to an .xdf file.
+    """
+    base_path = Path(base_dir)
+    if not base_path.is_dir():
+        print(f"Error: Directory not found at {base_dir}")
+        return []
+
+    # Use Path.rglob() to recursively find all files matching the pattern
+    xdf_files = list(base_path.rglob("*.xdf"))
+    
+    # Optional: Convert Path objects to strings if needed for external tools
+    # return [str(f) for f in xdf_files] 
+    
+    return xdf_files
+
+def build_eeg_raw(eeg_stream):
+    """Create RawArray from EEG stream, removing AUX and TRIGGER channels."""
+    chs = eeg_stream["info"]["desc"][0]["channels"][0]["channel"]
+    labels_all = [c["label"][0] for c in chs]
+
+    keep_idx = [
+        i for i, lbl in enumerate(labels_all)
+        if not lbl.startswith("AUX") and lbl != "TRIGGER"
+    ]
+
+    data = eeg_stream["time_series"].T * 1e-6  # µV → V
+    data = data[keep_idx, :]
+
+    ch_names = [labels_all[i] for i in keep_idx]
     ch_types = ["eeg"] * len(ch_names)
-    info = mne.create_info(ch_names, sfreq=samp_frq, ch_types=ch_types)
 
-    # --- Find stimulus stream ---
-    stim_stream = next((s for s in streams if s["info"]["name"][0] == stim_name), None)
-    if stim_stream is None:
-        raise ValueError(f"No '{stim_name}' stream found in dataset.")
+    fs = float(eeg_stream["info"]["nominal_srate"][0])
+    info = mne.create_info(ch_names, sfreq=fs, ch_types=ch_types)
 
-    # --- Build events array ---
-    event_timestamps = stim_stream["time_stamps"]
-    eeg_timestamps = eeg_stream["time_stamps"]
-    event_index = np.searchsorted(eeg_timestamps, event_timestamps)
-    event_values = stim_stream["time_series"].flatten()
-    events = np.column_stack([event_index.astype(int),
-                              np.zeros(len(event_timestamps), dtype=int),
-                              event_values])
-    return info, events
+    raw = mne.io.RawArray(data, info, verbose=False)
+    return raw
 
 
-def set_montage(raw, channels=CHANNELS, plot=False, save_dir=None):
-    """Set standard 10-20 montage and optionally save montage plot."""
-    print("Setting 10-20 montage...")
-    raw_1020 = raw.copy().pick_channels(channels)
-    montage = mne.channels.make_standard_montage('standard_1020')
-    raw_1020.set_montage(montage, match_case=False)
+def extract_events(streams, eeg_stream):
+    """Extract raw events (sample index, 0, code) from trigger stream."""
+    stim = get_trigger_stream(streams)
+    event_ts   = stim["time_stamps"]
+    event_vals = stim["time_series"].flatten().astype(int)
+    eeg_ts     = eeg_stream["time_stamps"]
 
+    # Align trigger timestamps to EEG sample indices
+    idx = np.searchsorted(eeg_ts, event_ts)
+    events = np.column_stack([idx.astype(int),
+                              np.zeros_like(idx, dtype=int),
+                              event_vals])
+    return events
+
+
+def remap_events(events):
+    """LSL codes → Movement Code → 6 EEG classes, drop non-interesting."""
+    if events is None or len(events) == 0:
+        return events
+
+    raw_codes = events[:, 2].astype(np.int64)
+    # Use the new, direct-mapping function
+    eeg_labels = np.array([decode_and_fuse_lsl_to_eeg_label(v) for v in raw_codes],
+                          dtype=np.int64)
+
+    keep = eeg_labels > 0 # Keep only valid class labels (1-6)
+    events_new = events[keep].copy()
+    events_new[:, 2] = eeg_labels[keep]
+    return events_new
+
+
+# -------------------------------------------------------------
+# MONTAGE, FILTERING, ICA
+# -------------------------------------------------------------
+
+
+def set_montage_and_reference(raw, plot=False, save_dir=None):
+    """
+    Correct pipeline for eegoSports:
+      1) set montage
+      2) mark pre-known bad electrodes 
+      3) set average reference (needed for interpolation)
+    """
+    print("Setting montage + average reference...")
+
+    montage = mne.channels.make_standard_montage("standard_1020")
+    raw.set_montage(montage, match_case=False, on_missing="ignore")
+
+    known_bads = ["M1", "M2", "TP7", "TP8"]
+    raw.info["bads"] = [ch for ch in known_bads if ch in raw.ch_names]
+    
+    # Check for channels that failed to get a 3D position from the montage
+    bad_pos_channels = []
+    for ch_name in raw.ch_names:
+        ch_idx = raw.ch_names.index(ch_name)
+        # Check if the location array is non-finite (e.g., NaN from unmatched montage)
+        if raw.info['chs'][ch_idx]['loc'].size > 0 and not np.all(np.isfinite(raw.info['chs'][ch_idx]['loc'][:3])):
+            bad_pos_channels.append(ch_name)
+            
+    if bad_pos_channels:
+        print(f"Removing channels with non-finite 3D positions (Montage failure): {bad_pos_channels}")
+        # Mark as bad and exclude from reference (they will be interpolated later)
+        raw.info["bads"].extend(bad_pos_channels)
+
+    raw.set_eeg_reference("average", projection=False)
+
+    # Optional plot
     if plot:
-        fig = raw_1020.plot_sensors(show_names=True, show=False)
+        fig = raw.plot_sensors(show_names=True, show=False)
         if save_dir:
-            fig_path = save_dir / "montage_layout.png"
-            fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-            plt.close(fig)
-            print(f"Saved montage plot → {fig_path}")
+            fig.savefig(save_dir / "montage_layout.png", dpi=150)
+        plt.close(fig)
 
-    return raw_1020
+    return raw
+
 
 
 def filter_data(raw, save_dir=None):
-    """Apply band-pass and notch filtering, save PSD plot."""
+    """Apply band-pass and notch filtering, save PSD plots (motor subset)."""
     print("Filtering data...")
-    
+
+    if raw.info["bads"]:
+        print(f"Skipping interpolation for the following bad channels (will be dropped later): {raw.info['bads']}")
+        # Instead of interpolating, we permanently drop the bad channels.
+        # This will reduce the number of channels in raw_all_filt.
+        raw.drop_channels(raw.info["bads"])
+        raw.info["bads"] = [] # Clear the bads list after dropping
+
     raw_filt = raw.copy()
-    raw_filt.filter(1., 50., fir_design='firwin') # Band-pass filter 1-50Hz
-    raw_filt.notch_filter(freqs=[50, 100])        # Notch filter at 50Hz and its harmonics
+    # Filter 1-50 Hz (avoids DC offset and line noise alias)
+    raw_filt.filter(1., 50., fir_design="firwin", verbose=False)
+    # Notch filter for 50 Hz and harmonics
+    raw_filt.notch_filter(freqs=[50, 100], verbose=False)
 
-    # Save PSD figure
-    fig1 = raw.compute_psd().plot(show=False, average=True)
-    fig2 = raw_filt.compute_psd().plot(show=False, average=True)
-    if save_dir:
-        fig1.savefig(save_dir / "psd_before_filtering.png", dpi=150, bbox_inches="tight")
+    # Plot PSDs only on motor-subset channels
+    try:
+        # Note: raw_motor_pre now works on the raw object *after* bad channel dropping
+        raw_motor_pre  = raw.copy().pick(PLOTTING_CHANNELS)
+        raw_motor_post = raw_filt.copy().pick(PLOTTING_CHANNELS)
+
+        fig1 = raw_motor_pre.compute_psd(fmax=100, n_fft=4096).plot(show=False, average=True, picks='eeg')
+        fig2 = raw_motor_post.compute_psd(fmax=100, n_fft=4096).plot(show=False, average=True, picks='eeg')
+
+        if save_dir is not None:
+            out1 = save_dir / "psd_before_filtering.png"
+            out2 = save_dir / "psd_after_filtering.png"
+            fig1.savefig(out1, dpi=150, bbox_inches="tight")
+            fig2.savefig(out2, dpi=150, bbox_inches="tight")
+            print(f"Saved PSD plot → {out1}")
+            print(f"Saved PSD plot → {out2}")
         plt.close(fig1)
-        print(f"Saved PSD plot → {save_dir / 'psd_before_filtering.png'}")
-
-        fig2.savefig(save_dir / "psd_after_filtering.png", dpi=150, bbox_inches="tight")
         plt.close(fig2)
-        print(f"Saved PSD plot → {save_dir / 'psd_after_filtering.png'}")
-
+    except Exception as e:
+        print(f"Could not compute/plot PSDs: {e}")
 
     return raw_filt
 
-# -------------------------------------------
-# Plotting functions
-# -------------------------------------------
-
-def plot_events_and_save(events, fs, raw, save_dir):
-    """Plot events overlayed on data and save figures if events exist."""
-    if events is None or len(events) == 0:
-        print("No events found — skipping event plots.")
-        return
-
-    fig = raw.plot(events=events, scalings='auto', n_channels=20, show=False)
-    fig_path = save_dir / "raw_with_events.png"
-    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved raw+events plot → {fig_path}")
-
 
 def run_ica_and_save(raw, save_dir):
-    """Run ICA and save main diagnostic plots."""
+    """Run ICA on full EEG and save diagnostic plots."""
     print("Running ICA...")
-    ica = mne.preprocessing.ICA(n_components=10, random_state=42)
-    ica.fit(raw)
+    
+    # Final data cleaning before ICA (to catch NaNs from interpolation/filtering)
+    data = raw.get_data()
+    nan_indices = np.where(~np.isfinite(data))
+    
+    if nan_indices[0].size > 0:
+        print(f"Warning: Re-detected and replacing {nan_indices[0].size} non-finite samples with 0 before ICA.")
+        data[nan_indices] = 0.0 
+        raw._data = data # Update the raw object's data
+    # --------------------------------------------------------------------
+
+    ica = mne.preprocessing.ICA(n_components=10, random_state=42, method="infomax")
+    # Fit ICA on the now-cleaned raw object
+    ica.fit(raw, picks='eeg')
 
     fig1 = ica.plot_components(show=False)
-    fig1_path = save_dir / "ica_components.png"
-    fig1.savefig(fig1_path, dpi=150, bbox_inches="tight")
-    plt.close(fig1)
-
     fig2 = ica.plot_sources(raw, show=False)
+
+    fig1_path = save_dir / "ica_components.png"
     fig2_path = save_dir / "ica_sources.png"
+
+    fig1.savefig(fig1_path, dpi=150, bbox_inches="tight")
     fig2.savefig(fig2_path, dpi=150, bbox_inches="tight")
+    plt.close(fig1)
     plt.close(fig2)
 
     print(f"Saved ICA plots → {save_dir}")
     return ica
+
+
+# -------------------------------------------------------------
+# PLOTTING FUNCTIONS
+# -------------------------------------------------------------
+
+def plot_events_and_save(events, raw_motor, save_dir):
+    """Plot motor-subset channels with events overlaid."""
+    if events is None or len(events) == 0:
+        print("No events found — skipping raw+events plot.")
+        return
+
+    try:
+        fig = raw_motor.plot(events=events, scalings="auto",
+                             n_channels=len(raw_motor.ch_names),
+                             show=False, block=True)
+        fig_path = save_dir / "raw_with_events.png"
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved raw+events plot → {fig_path}")
+    except Exception as e:
+        print(f"Could not plot raw+events: {e}")
 
 
 def plot_event_distribution(events, save_dir):
@@ -248,21 +384,30 @@ def plot_event_distribution(events, save_dir):
     if events is None or len(events) == 0:
         print("No events found — skipping event count plot.")
         return
+
     df = pd.DataFrame(events, columns=["sample", "prev", "event_id"])
     fig, ax = plt.subplots(figsize=(5, 3))
     sns.countplot(x="event_id", data=df, ax=ax)
     ax.set_title("Event count distribution")
-    fig.savefig(save_dir / "event_counts.png", dpi=150, bbox_inches="tight")
+    
+    # Use the mapping to get the correct string labels for ticks
+    id_to_name = {v: k for k, v in EEG_LABELS.items()}
+    tick_names = [id_to_name.get(int(tick.get_text()), '') for tick in ax.get_xticklabels()]
+    ax.set_xticklabels(tick_names, rotation=45, ha='right')
+
+    out = save_dir / "event_counts.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved event distribution → {save_dir / 'event_counts.png'}")
+    print(f"Saved event distribution → {out}")
 
 
-def plot_erps(raw, events, event_id_map, save_dir):
+def plot_erps(raw_motor, events, event_id_map, save_dir):
     """
-    Create ERPs, ERPs-mean/SEM, ERP topomaps, PSD-band topomaps,
+    Create ERPs (butterfly, mean+SEM), ERP topomaps, PSD band topomaps,
     and ERP-difference topomaps between paired conditions.
-    """
 
+    All plots use the motor subset channels (raw_motor).
+    """
     print("\nComputing ERPs per condition...")
 
     if events is None or len(events) == 0:
@@ -271,119 +416,113 @@ def plot_erps(raw, events, event_id_map, save_dir):
 
     try:
         epochs = mne.Epochs(
-            raw, events, event_id=event_id_map,
+            raw_motor, events,
+            event_id=event_id_map,
             tmin=-0.1, tmax=0.5, preload=True,
             baseline=(None, 0),
-            on_missing='ignore'
+            on_missing="ignore",
+            event_repeated='drop',
+            verbose=False
         )
     except Exception as e:
-        print(f"Could not create epochs: {e}")
+        print(f"Could not create epochs for ERP: {e}")
         return
 
-    # Count events
+    if len(epochs.events) == 0:
+        print("No epochs after event matching — skipping ERP plots.")
+        return
+
     df = pd.DataFrame(epochs.events, columns=["_", "__", "event_id"])
     counts = df["event_id"].value_counts()
     print(f"Event counts:\n{counts}")
 
-    # Times for topomaps of electrode activity for the average ERP per condition
     TOPO_TIMES = [0.0, 0.1, 0.2, 0.3]
-
-    # container for evokeds of each condition
     all_evokeds = {}
 
-    # LOOP over labels for each condition to extract ERPs and make relevant plots
-    for label in event_id_map.keys():
-
-        n_ep = len(epochs[label])
-
+    # Per-condition ERPs
+    for label_name, label_id in epochs.event_id.items():
+        
+        ep = epochs[label_name]
+        n_ep = len(ep)
+        
         if n_ep == 0:
-            print(f"No epochs for {label}, skipping.")
+            print(f"No epochs for {label_name} (ID {label_id}), skipping.")
             continue
 
-        print(f" → ERP for {label}")
+        print(f" → ERP for {label_name} (n={n_ep})")
 
-        ep = epochs[label]
         evoked = ep.average()
+        all_evokeds[label_name] = evoked.copy()
 
-        # save evoked for the contrasts performed later
-        all_evokeds[label] = evoked.copy()
-
-        # BUTTERFLY PLOT of the electrode activity for the conditions
-        fig_butterfly = evoked.plot(
-            spatial_colors=True,
-            time_unit='s',
-            show=False
-        )
-        fig_butterfly.suptitle(f"ERP – {label}", fontsize=12)
-        fig_butterfly.savefig(save_dir / f"erp_{label}_butterfly.png",
+        # Butterfly ERP
+        fig_butterfly = evoked.plot(spatial_colors=True,
+                                    time_unit="s",
+                                    show=False)
+        fig_butterfly.suptitle(f"ERP – {label_name}", fontsize=12)
+        fig_butterfly.savefig(save_dir / f"erp_{label_name}_butterfly.png",
                               dpi=150, bbox_inches="tight")
         plt.close(fig_butterfly)
 
-        # ERP mean + SEM
-        data = ep.get_data().mean(axis=1)
+        # ERP mean + SEM over channels
+        data = ep.get_data().mean(axis=1)   # (n_epochs, n_times)
         mean = data.mean(axis=0)
-        sem = data.std(axis=0) / np.sqrt(data.shape[0])
+        sem  = data.std(axis=0) / np.sqrt(data.shape[0])
 
-        n_ep = data.shape[0]
         mean_sem_val = float(np.mean(sem))
-        max_sem_val = float(np.max(sem))
+        max_sem_val  = float(np.max(sem))
 
         fig, ax = plt.subplots(figsize=(7, 4))
         ax.plot(ep.times, mean, label="Mean ERP")
         ax.fill_between(ep.times, mean - sem, mean + sem,
                         alpha=0.3, label="SEM")
-        ax.axvline(0, color='k', linestyle='--')
-        ax.set_title(f"ERP Average – {label}")
+        ax.axvline(0, color="k", linestyle="--")
+        ax.set_title(f"ERP Average – {label_name}")
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Amplitude (V)")
         ax.legend()
 
         info_text = (
-            f"n_epochs = {n_ep}\n"
+            f"n_epochs = {data.shape[0]}\n"
             f"mean SEM = {mean_sem_val:.2e}\n"
             f"max SEM = {max_sem_val:.2e}"
         )
-        ax.text(0.98, 0.98, info_text, transform=ax.transAxes,
-                ha='right', va='top', fontsize=9,
-                bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'))
+        ax.text(0.98, 0.98, info_text,
+                transform=ax.transAxes,
+                ha="right", va="top", fontsize=9,
+                bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"))
 
-        fig.savefig(save_dir / f"erp_{label}_mean_sem.png",
+        fig.savefig(save_dir / f"erp_{label_name}_mean_sem.png",
                     dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-        # ERP TOPOMAPS at the previously defined time ponints
+        # ERP topomaps
         evoked_micro = evoked.copy()
         evoked_micro._data *= 1e6
 
         fig_topo = evoked_micro.plot_topomap(
             TOPO_TIMES,
-            time_unit='s',
+            time_unit="s",
             show=False,
             scalings=1,
-            cmap='RdBu_r'
+            cmap="RdBu_r"
         )
-        fig_topo.suptitle(f"Topomap – {label} (µV)", fontsize=12)
-        fig_topo.savefig(save_dir / f"erp_{label}_topomap.png",
+        fig_topo.suptitle(f"Topomap – {label_name} (µV)",
+                          fontsize=12)
+        fig_topo.savefig(save_dir / f"erp_{label_name}_topomap.png",
                          dpi=150, bbox_inches="tight")
         plt.close(fig_topo)
 
-        # PSD BAND-POWER TOPOMAPS: for every frequency range, plot the spectral activity for the electrodes on the average signal of the ERP per condition
-        print(f"   • Computing PSD band powers for {label} ...")
-
-        from mne.time_frequency import psd_array_welch
-        
-        ep_data = ep.get_data()  
-        mean_signal = ep_data.mean(axis=0)  
-
-        n_times = mean_signal.shape[1]
+        # PSD band-power topomaps over mean ERP signal
+        print(f"   • Computing PSD band powers for {label_name} ...")
+        ep_data = ep.get_data()             # (n_epochs, n_channels, n_times)
+        mean_signal = ep_data.mean(axis=0)  # (n_channels, n_times)
 
         psd, freqs = psd_array_welch(
             mean_signal,
-            sfreq=raw.info['sfreq'],
+            sfreq=raw_motor.info["sfreq"],
             fmin=1, fmax=45,
-            n_fft=n_times,
-            n_per_seg=n_times,
-            n_overlap=0,
+            n_fft=256,
+            n_overlap=128,
             verbose=False
         )
 
@@ -392,7 +531,7 @@ def plot_erps(raw, events, event_id_map, save_dir):
             "theta": (4, 8),
             "alpha": (8, 12),
             "beta":  (13, 30),
-            "gamma": (30, 45)
+            "gamma": (30, 45),
         }
 
         band_powers = {}
@@ -401,37 +540,26 @@ def plot_erps(raw, events, event_id_map, save_dir):
             band_powers[band] = psd[:, idx].mean(axis=1)
 
         fig = plt.figure(figsize=(12, 8))
-        fig.suptitle(f"PSD Band Topomaps – {label}", fontsize=14)
-
-        from mne.viz import plot_topomap
+        fig.suptitle(f"PSD Band Topomaps – {label_name}", fontsize=14)
 
         for i, (band, values) in enumerate(band_powers.items(), start=1):
             ax = fig.add_subplot(2, 3, i)
             fmin, fmax = bands[band]
-
-            plot_topomap(values, raw.info, axes=ax,
-                         show=False, cmap='Reds')
+            plot_topomap(values, raw_motor.info, axes=ax,
+                         show=False, cmap="Reds")
             ax.set_title(f"{band} ({fmin}-{fmax} Hz)")
 
         plt.tight_layout(rect=[0, 0, 1, 0.93])
-        fig.savefig(save_dir / f"psd_{label}_bands_topomap.png",
+        fig.savefig(save_dir / f"psd_{label_name}_bands_topomap.png",
                     dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-        print(f"   • Saved PSD band-power maps for {label}")
+        print(f"   • Saved PSD band-power maps for {label_name}")
 
-    # finally use the previously defined ERP and contrast pairs to compute the ERP DIFFERENCE TOPOMAPS
-
-    CONTRASTS = [
-        ("hand_open", "hand_close"),
-        ("forearm_supination", "forearm_pronation"),
-        ("elbow_extension", "elbow_flexion")
-    ]
-
+    # ERP difference topomaps
     print("\nEvokeds available:", list(all_evokeds.keys()))
 
     for cond1, cond2 in CONTRASTS:
-
         if cond1 not in all_evokeds or cond2 not in all_evokeds:
             print(f"Skipping contrast {cond1}–{cond2}, missing evoked.")
             continue
@@ -447,12 +575,13 @@ def plot_erps(raw, events, event_id_map, save_dir):
 
         fig = diff_micro.plot_topomap(
             TOPO_TIMES,
-            time_unit='s',
-            cmap='RdBu_r',
+            time_unit="s",
+            cmap="RdBu_r",
             scalings=1,
             show=False
         )
-        fig.suptitle(f"ERP Difference: {cond1} − {cond2} (µV)", fontsize=12)
+        fig.suptitle(f"ERP Difference: {cond1} − {cond2} (µV)",
+                     fontsize=12)
 
         fig.savefig(save_dir / f"erp_diff_{cond1}_minus_{cond2}.png",
                     dpi=150, bbox_inches="tight")
@@ -462,19 +591,20 @@ def plot_erps(raw, events, event_id_map, save_dir):
 
 
 # ------------------------------------------------
-# Dataset builder
+# DATASET BUILDER
 # ------------------------------------------------
 
-def save_epochs_npz(epochs: mne.Epochs, event_id_map: dict, npz_path: Path, groups_value: int | None = None):
+def save_epochs_npz(epochs: mne.Epochs,
+                    npz_path: Path,
+                    groups_value: int | None = None):
     """
     Save epochs to NPZ compatible with train.py:
       X: (n_epochs, n_channels, n_times)
-      y: (n_epochs,)   integer labels (event IDs)
+      y: (n_epochs,) integer labels (event IDs)
       groups: (n_epochs,) integers (e.g., run index) to avoid leakage
     """
-    X = epochs.get_data()  # shape (n_epochs, n_channels, n_times)
-    # y from epochs.events[:, 2] already matches your EVENT_ID_MAP values
-    y = epochs.events[:, 2].astype(int)
+    X = epochs.get_data()                # (n_epochs, n_channels, n_times)
+    y = epochs.events[:, 2].astype(int)  # event IDs are already 1–6
 
     if groups_value is None:
         groups = np.zeros_like(y)
@@ -485,65 +615,98 @@ def save_epochs_npz(epochs: mne.Epochs, event_id_map: dict, npz_path: Path, grou
     print(f"Saved epochs bundle → {npz_path}  "
           f"[X: {X.shape}, y: {y.shape}, groups: {groups.shape}]")
 
-def preprocess_xdf_file(xdf_path: Path, dataset_root: Path = DATASET_DIR):
+
+def preprocess_xdf_file(xdf_path: Path,
+                        dataset_root: Path = DATASET_DIR):
     """Preprocess a single XDF file and store results in dataset_root."""
 
     print(f"\n Processing: {xdf_path.name}")
     streams, header = pyxdf.load_xdf(str(xdf_path))
-    eeg_stream = find_eeg_stream(streams, expected_channels=24)
-    data = eeg_stream["time_series"].T * 1e-6  # µV → V
+    
+    if len(streams) < 2:
+        print(f"Error: Only {len(streams)} streams found. Expected at least 2 (Trigger and EEG). Skipping.")
+        return None
 
-    info, events = extract_mne_info_and_events(streams)
-    raw = mne.io.RawArray(data, info)
-    fs = raw.info["sfreq"]
+    # Identify streams (assuming the one with higher channels is EEG)
+    eeg_stream = get_eeg_stream(streams)
+    trigger_stream = get_trigger_stream(streams)
+
+
+    raw_all = build_eeg_raw(eeg_stream)        # full EEG (no AUX/TRIGGER)
+
+    # Initial cleaning of non-finite data points
+    raw_data = raw_all.get_data()
+    nan_indices = np.where(~np.isfinite(raw_data))
+    if nan_indices[0].size > 0:
+        print(f"Warning: Detected and replacing {nan_indices[0].size} non-finite samples with 0 in the raw data.")
+        raw_data[nan_indices] = 0.0 
+        raw_all._data = raw_data 
+
+
+    fs = raw_all.info["sfreq"]
+    
+    # Events extraction now uses the correct stream identification
+    events_raw = extract_events(streams, eeg_stream)
+    events     = remap_events(events_raw)
+    print(f"Events after remapping: {len(events)}")
 
     # Create output folders
-    fig_dir = dataset_root / "figures" / xdf_path.stem
+    fig_dir   = dataset_root / "figures"  / xdf_path.stem
     clean_dir = dataset_root / "processed"
-    for d in [fig_dir, clean_dir]:
+    for d in (fig_dir, clean_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    # Run preprocessing pipeline
-    raw_1020 = set_montage(raw, channels=CHANNELS, plot=True, save_dir=fig_dir) # standard 10-20 montage
-    raw_filt = filter_data(raw_1020, save_dir=fig_dir) # band-pass + notch filtering
+    # Montage + average ref 
+    raw_all = set_montage_and_reference(raw_all, plot=True, save_dir=fig_dir)
+    
+    # Filtering + Interpolation of bads
+    raw_all_filt = filter_data(raw_all, save_dir=fig_dir)
 
-    plot_events_and_save(events, fs, raw_filt, save_dir=fig_dir) 
-    ica = run_ica_and_save(raw_filt, save_dir=fig_dir)
+    # Motor-subset view for plotting & epochs
+    # raw_motor = raw_all_filt.copy().pick_channels(PLOTTING_CHANNELS, ordered=True)
+    raw_motor = raw_all_filt.copy().pick(PLOTTING_CHANNELS)
 
-    # Plot event distribution and ERPs
+    # Plots: raw+events, ICA, event distribution, ERPs
+    plot_events_and_save(events, raw_motor, save_dir=fig_dir)
+    run_ica_and_save(raw_all_filt, save_dir=fig_dir) 
     plot_event_distribution(events, save_dir=fig_dir)
-    plot_erps(raw_filt, events, SELECTED_EVENT_ID_MAP, save_dir=fig_dir)
+    plot_erps(raw_motor, events, SELECTED_EVENT_ID_MAP, save_dir=fig_dir)
 
-    # ---- Build epochs once (same params as your ERP step) ----
+    # Build epochs for ML (same channels as motor subset)
     try:
-        epochs = mne.Epochs(raw_filt, events, event_id=SELECTED_EVENT_ID_MAP,
-                            tmin=-0.5, tmax=0.8, preload=True,
-                            on_missing='ignore', baseline=(None, 0))
-        # restrict to 8–30 Hz for motor features if 
-        # epochs.filter(8., 30., fir_design='firwin')
+        epochs = mne.Epochs(
+            raw_motor, events,
+            event_id=SELECTED_EVENT_ID_MAP,
+            tmin=-0.5, tmax=0.8, preload=True,
+            on_missing="ignore",
+            baseline=(None, 0),
+            event_repeated='drop',
+            verbose=False
+        )
 
-        # Derive a simple groups value from the filename (run index)
-        # e.g., ..._run-003_...
-        import re
-        m = re.search(r'run-(\\d+)', xdf_path.stem)
-        groups_value = int(m.group(1)) if m else 0
+        if len(epochs.events) == 0:
+            print("No epochs could be created — skipping NPZ save.")
+        else:
+            m = re.search(r"run-(\d+)", xdf_path.stem)
+            groups_value = int(m.group(1)) if m else 0
 
-        npz_out = dataset_root / "processed" / f"{xdf_path.stem}_epochs.npz"
-        save_epochs_npz(epochs, SELECTED_EVENT_ID_MAP, npz_out, groups_value=groups_value)
+            npz_out = dataset_root / "processed" / f"{xdf_path.stem}_epochs.npz"
+            save_epochs_npz(epochs, npz_out, groups_value=groups_value)
     except Exception as e:
         print(f"Could not create/save epochs NPZ: {e}")
+        return None
 
-    # Save preprocessed data
+    # Save full preprocessed raw (all EEG channels)
     out_path = clean_dir / f"{xdf_path.stem}_raw.fif"
-    raw_filt.save(out_path, overwrite=True)
-
+    raw_all_filt.save(out_path, overwrite=True, verbose=False)
     print(f"Saved cleaned data: {out_path}")
+
     return {
         "file": xdf_path.name,
         "sfreq": fs,
-        "n_channels": len(raw_filt.ch_names),
-        "n_events": len(events),
-        "output_path": str(out_path)
+        "n_channels": len(raw_all_filt.ch_names),
+        "n_events": int(len(events)),
+        "output_path": str(out_path),
     }
 
 
@@ -555,52 +718,29 @@ def build_dataset(xdf_paths):
     all_meta = []
     for path in xdf_paths:
         meta = preprocess_xdf_file(Path(path), dataset_root=DATASET_DIR)
-        all_meta.append(meta)
+        if meta:
+            all_meta.append(meta)
 
-    with open(metadata_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=all_meta[0].keys())
-        writer.writeheader()
-        writer.writerows(all_meta)
-
-    print(f"\n Dataset built successfully → {metadata_path}")
-
-
+    if all_meta:
+        with open(metadata_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=all_meta[0].keys())
+            writer.writeheader()
+            writer.writerows(all_meta)
+        print(f"\n Dataset built successfully → {metadata_path}")
+    else:
+        print("No metadata to save (no files processed?).")
 
 
 # ------------------------------------------------
-# Main pipeline for dataset
+# MAIN
 # ------------------------------------------------
+
+
+
 if __name__ == "__main__":
-    xdf_list = [
 
-        # Sara
+    base_directory = "sub-P005"
 
-        #"archives/2024/EEG/data/sub-TEST1/ses-S001/eeg/sub-TEST1_ses-S001_task-Default_run-001_eeg.xdf",
-
-        #"archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-001_eeg.xdf",
-        #"/Users/saracruz/Desktop/N-Pulse/BCI/Signal_Processing/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-002_eeg.xdf",
-        #"C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-003_eeg.xdf",
-
-        #"archives/2024/EEG/data/sub-P001/ses-S001/eeg/sub-P001_ses-S001_task-Default_run-001_eeg.xdf",
-        # add more files here
-
-        # Ameer
-        
-        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-001_eeg.xdf",
-        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-002_eeg.xdf",
-        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-003_eeg.xdf",
-        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P001/ses-S001/eeg/sub-P001_ses-S001_task-Default_run-001_eeg.xdf",
-        # "C:/Users/ameer/OneDrive/Desktop/Master/MA5/N-Pulse/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-TEST1/ses-S001/eeg/sub-TEST1_ses-S001_task-Default_run-001_eeg.xdf",
-        
-        # Davide
-        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-001_eeg.xdf",
-        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-002_eeg.xdf",
-        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P019/ses-S001/eeg/sub-P019_ses-S001_task-Default_run-003_eeg.xdf",
-        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-P001/ses-S001/eeg/sub-P001_ses-S001_task-Default_run-001_eeg.xdf",
-        "/Users/davide.micheletti/Desktop/BMI-SOFT-Signal_Processing_ML/archives/2024/EEG/data/sub-TEST1/ses-S001/eeg/sub-TEST1_ses-S001_task-Default_run-001_eeg.xdf",
-    ]
+    xdf_list = get_xdf_file_list(base_directory) # will find all .xdf within directory
+    
     build_dataset(xdf_list)
-
-
-
-

@@ -1,6 +1,6 @@
 # run_all comparisons
 """
-Run compare_training.py across all label modes (default, hand, elbow, forearm)
+Run compare_training.py across all label modes
 either using all preprocessed datasets or a single base dataset.
 
 Each mode’s results are saved under:
@@ -8,6 +8,9 @@ Each mode’s results are saved under:
 
 A combined summary of all experiments is saved as:
     comparisons/all_modes_summary.csv
+
+Run with:
+  python run_all_comparisons.py --base all
 """
 
 import subprocess
@@ -25,8 +28,8 @@ parser.add_argument("--base", type=str, default="all",
 parser.add_argument("--cv", type=int, default=5, help="Number of cross-validation folds")
 args = parser.parse_args()
 
-modes = ["hand", "elbow", "forearm"]
-base_data = Path("dataset/EEG_clean/processed")
+modes = ["hand_dir", "wrist_dir"]
+base_data = Path("EEG_clean/processed")
 base_out = Path("comparisons")
 FS = "300"  # Hz
 
@@ -39,12 +42,11 @@ if args.base != "all":
         raise FileNotFoundError(f"❌ Base dataset not found: {base_path}")
 
     print(f"\n🎯 Using single base dataset: {base_path.name}")
-    print("🧩 Simplifying into hand/elbow/forearm binary datasets...")
 
     # Run simplify_labels.py for all modes
     for mode in modes:
         subprocess.run([
-            "python", "simplify_labels.py",
+            "python", "simplify_labels_new.py",
             "--data", str(base_path),
             "--mode", mode
         ], check=True)
@@ -52,9 +54,9 @@ if args.base != "all":
     # After simplification, run compare_training on those generated files
     for mode in modes:
         data_path = base_data / "simplified" / mode
-        print(f"\n🚀 Running compare_training.py for mode: {mode}")
+        print(f"\n🚀 Running compare_training_new.py for mode: {mode}")
         subprocess.run([
-            "python", "compare_training.py",
+            "python", "compare_training_new.py",
             "--data", str(data_path),
             "--fs", FS,
             "--base_outdir", str(base_out),
@@ -68,9 +70,9 @@ else:
     print("\n🧠 Running across ALL processed datasets...")
     for mode in modes:
         data_path = base_data / "simplified" / mode
-        print(f"\n🚀 Running compare_training.py for mode: {mode}")
+        print(f"\n🚀 Running compare_training_new.py for mode: {mode}")
         subprocess.run([
-            "python", "compare_training.py",
+            "python", "compare_training_new.py",
             "--data", str(data_path),
             "--fs", FS,
             "--base_outdir", str(base_out),
