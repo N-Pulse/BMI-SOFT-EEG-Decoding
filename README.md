@@ -10,15 +10,25 @@ The primary goal is to transform raw EEG signals into machine learning-ready fea
 
 ### ⚙️ Pipeline Overview
 
-The workflow is uses three main scripts:
+The project is organised following a [Lightning-Hydra–style template](https://github.com/ashleve/lightning-hydra-template) layout:
 
-1.  **`processing.py`:**
-      * Handles **signal preprocessing** (filtering, referencing, ICA) and converts raw LSL markers into the final integer labels.
-      * Generates plots for quality control and feature visualization.
-2.  **`simplify_labels.py`:**
-      * **Reduces the problem** into binary or specialized classification tasks (e.g., Hand Open vs. Hand Close) to optimize model training.
-3.  **`train.py`:**
-      * Performs **feature extraction** (Bandpower, CSP) and trains robust linear classifiers (LDA, SVM) using cross-validation.
+| Folder        | Role |
+|---------------|------|
+| **`src/data/`**   | Data preprocessing: **`processing.py`** (signal preprocessing, filtering, ICA, epochs) and **`simplify_labels.py`** (binary/specialised label modes). |
+| **`src/models/`** | Training pipeline: featureizers (Bandpower, CSP), classifiers (LDA, LogReg, SVM), evaluation. |
+| **`src/evaluation/`** | Model comparison: **`compare_training.py`** (multi-config comparison), **`run_all_comparisons.py`** (all modes + aggregate). |
+| **`configs/`**  | Hydra/experiment configs (optional). |
+| **`data/`**    | Project data (e.g. raw inputs). |
+| **`logs/`**    | Training/eval logs and checkpoints. |
+| **`notebooks/`** | Jupyter notebooks. |
+| **`tests/`**   | Tests (TODO: add unit and integration tests). |
+
+Workflow:
+
+1. **Preprocessing** — `src/data/processing.py`: signal preprocessing, filtering, referencing, ICA; LSL markers → integer labels; QC plots.
+2. **Label simplification** — `src/data/simplify_labels.py`: reduce to binary or specialised tasks (e.g. Hand Open vs Hand Close).
+3. **Training** — `src/train.py`: feature extraction (Bandpower, CSP) and linear classifiers (LDA, LogReg, SVM) with optional cross-validation.
+4. **Evaluation** — `src/eval.py` / `src/evaluation/`: compare multiple feature/model configs and aggregate results.
 
 -----
 
@@ -35,21 +45,28 @@ This repository contains data from multiple acquisition phases, including 2024 d
 
 ###  Getting Started
 
-To execute the full pipeline and generate a first trained model:
+Run all commands from the **project root**.
 
+1. **Preprocessing** (from directory containing `.xdf` files, e.g. `sub-P005`):
+   ```bash
+   python -m src.data.processing
+   ```
+   Or edit `src/data/processing.py` `if __name__ == "__main__"` to point at your data path.
 
+2. **Label simplification** (e.g. hand open/close):
+   ```bash
+   python -m src.data.simplify_labels --data EEG_clean/processed/ --mode hand_dir
+   ```
 
-1.  **Run Preprocessing:** Start by cleaning the raw signals.
-    ```bash
-    python processing_new.py
-    ```
-2.  **Run Simplification:** Create the binary classification sets (e.g., for hand movements, based on codes from the acquisition team).
-    ```bash
-    python simplify_labels.py --data EEG_clean/processed/ --mode hand_dir
-    ```
-3.  **Run Training:** Train a baseline model on the simplified data.
-    ```bash
-    python train.py --data EEG_clean/processed/simplified/hand_dir/ --features bandpower --model lda --fs 512
-    ```
+3. **Training** (single run):
+   ```bash
+   python -m src.train --data EEG_clean/processed/simplified/hand_dir/ --features bandpower --model lda --fs 512
+   ```
 
-To run the processing on 2024 data, run the following steps under the `archives/2025/EEG` directory.
+4. **Evaluation / comparison** (single mode or all modes):
+   ```bash
+   python -m src.eval --data EEG_clean/processed/simplified/hand_dir --fs 300 --base_outdir comparisons
+   python -m src.eval --all --cv 5
+   ```
+
+To run the processing on 2024 data, use the scripts under `archives/2025/EEG` as reference.

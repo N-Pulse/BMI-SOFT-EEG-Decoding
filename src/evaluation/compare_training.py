@@ -2,25 +2,18 @@
 """
 Compare multiple training configurations on the same EEG/EMG dataset (.npz or directory).
 
-Automatically evaluates combinations of:
-  • Featureization:  none  |  bandpower
-  • Models:          lda, logreg, lsvm, csp_lda
+Evaluates combinations of features (none, bandpower) and models (logreg, lsvm, csp_lda).
+Results: comparisons/<mode>/summary_<timestamp>.csv and per-run artifacts.
 
-Results:
-  comparisons/<mode>/summary_<timestamp>.csv
-  comparisons/<mode>/<model>_<features>/metrics.json etc.
-
-Note: 
-    Make sure to run simplify_labels.py first to create the all simplified datasets in comparisons/<mode>/ before running this script.
-
-Usage:
-  python compare_training.py --data EEG_clean/processed/simplified/hand_dir --fs 300 --base_outdir comparisons/hand_dir
+Usage (from project root):
+  python -m src.evaluation.compare_training --data EEG_clean/processed/simplified/hand_dir --fs 300 --base_outdir comparisons/hand_dir
 """
 
 from pathlib import Path
 import json
 import shutil
 import subprocess
+import sys
 import argparse
 import pandas as pd
 import itertools
@@ -28,9 +21,6 @@ import time
 import re
 
 
-# ------------------------------------------------
-# Argument parser
-# ------------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser(description="Compare different training configurations")
     p.add_argument('--data', type=str, required=True, help='Path to .npz or directory of .npz bundles')
@@ -42,15 +32,10 @@ def parse_args():
     return p.parse_args()
 
 
-# ------------------------------------------------
-# Comparison logic
-# ------------------------------------------------
 def main():
     args = parse_args()
     data_path = Path(args.data)
 
-    # --- Detect mode name from filename ---
-    # Example filename: sub-P019_ses-S001_task-Default_run-003_eeg_epochs_hand_binary.npz
     mode_match = re.search(r'(hand_dir|fine_type|wrist_dir)', data_path.stem)
     mode_name = mode_match.group(1) if mode_match else "default"
 
@@ -61,10 +46,8 @@ def main():
     print(f"📂 Output directory: {base_outdir.resolve()}\n")
 
     configs = list(itertools.product(
-        #['none', 'bandpower'],             # feature methods
-        #['lda', 'logreg', 'lsvm', 'csp_lda']  # models
-        ['none', 'bandpower'],             # feature methods
-        ['logreg', 'lsvm', 'csp_lda']  # models
+        ['none', 'bandpower'],
+        ['logreg', 'lsvm', 'csp_lda']
     ))
 
     summary = []
@@ -74,15 +57,10 @@ def main():
     print(f"🚀 Running {len(configs)} training configurations...\n")
 
     for feat, model in configs:
-    # Skip duplicate CSP+none (since we force it to bandpower anyway)
         if model == 'csp_lda' and feat == 'none':
             continue
 
-        if model == 'csp_lda':
-            feature_choice = 'none'  # CSP always uses raw data
-        else:
-            feature_choice = feat
-
+        feature_choice = 'none' if model == 'csp_lda' else feat
         run_name = f"{model}_{feature_choice}"
         outdir = base_outdir / run_name
         if outdir.exists():
@@ -92,7 +70,7 @@ def main():
         print(f"\n--- Training {run_name} ---")
 
         cmd = [
-            'python', 'train.py',
+            sys.executable, '-m', 'src.train',
             '--data', str(args.data),
             '--features', feature_choice,
             '--model', model,
@@ -105,8 +83,7 @@ def main():
         if args.cv > 0:
             cmd += ['--cv', str(args.cv)]
 
-        # Run training
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=Path(__file__).resolve().parent.parent.parent)
         if result.returncode != 0:
             print(f"❌ Failed: {run_name}\n{result.stderr}")
             summary.append({
@@ -120,7 +97,6 @@ def main():
             })
             continue
 
-        # Parse metrics
         metrics_file = outdir / 'metrics.json'
         if metrics_file.exists():
             with open(metrics_file, 'r') as f:
@@ -143,7 +119,6 @@ def main():
                 "f1_macro": None
             })
 
-    # --- Save results as CSV ---
     df = pd.DataFrame(summary)
     df.to_csv(summary_path, index=False)
 
