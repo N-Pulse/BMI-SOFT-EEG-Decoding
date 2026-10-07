@@ -1,12 +1,12 @@
-"""Preprocess one MOVING EDF for the 4-class task: rest / open_close / wrist_rotation / finger_tapping.
+"""Preprocess one MOVING EDF: epochs for rest / motor imagery (MI) / motor execution (ME), per gesture.
 
 Follows Mattei et al. 2024 (Sensors 24(16), 5207):
   10-20 montage -> drop flat channels -> common average reference -> 1-100 Hz Butterworth
   -> 50 Hz notch (not in the paper) -> Extended-Infomax ICA (ICLabel eye/muscle, p > 0.9 removed)
   -> 256 Hz -> band-pass -> 1 s epochs (50 % overlap) -> Welch PSD.
 
-Only motor-execution (ME) blocks are used. Trigger IDs are mapped to the protocol order;
-this mapping is inferred, not stored in the EDF.
+All block types are saved with their trigger number, so the trainer picks the task (state vs gesture).
+Trigger IDs are mapped to the protocol order; this mapping is inferred, not stored in the EDF.
 """
 
 import argparse
@@ -19,18 +19,20 @@ from mne.preprocessing import ICA
 from mne_icalabel import label_components
 from scipy.signal import welch
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 BANDS = {"1-45": (1, 45), "1-4": (1, 4), "4-8": (4, 8), "8-12": (8, 12), "12-30": (12, 30), "30-45": (30, 45)}
 
-# ME: 5/11/17 
-# MI: 3/9/15
-CLASS_OF_CUE = {
-    "Trigger#1": "rest", "Trigger#7": "rest", "Trigger#13": "rest",
-    "Trigger#5": "open_close", "Trigger#11": "wrist_rotation", "Trigger#17": "finger_tapping",
+# Odd triggers start a 6 s block. A repetition is 9 blocks: (rest, MI, ME) x 3 gestures.
+CUE_INFO = {
+    1: ("rest", "rest"), 7: ("rest", "rest"), 13: ("rest", "rest"),
+    3: ("motor_imagery", "open_close"), 9: ("motor_imagery", "wrist_rotation"), 15: ("motor_imagery", "finger_tapping"),
+    5: ("motor_execution", "open_close"), 11: ("motor_execution", "wrist_rotation"), 17: ("motor_execution", "finger_tapping"),
 }
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--file", type=Path, required=True, help="Input MOVING EDF")
-parser.add_argument("--outdir", type=Path, default=Path("artifacts/moving_preprocessed"))
+parser.add_argument("--outdir", type=Path, default=PROJECT_ROOT / "results" / "moving_preprocessed")
 parser.add_argument("--band", choices=BANDS, default="1-45")
 parser.add_argument("--window", type=float, default=1.0,
                     help="Epoch length in s (a 200 ms periodogram has ~5 Hz resolution and is very noisy)")
@@ -85,7 +87,7 @@ low, high = BANDS[args.band]
 raw.filter(low, high, picks="eeg", **iir)
 report("5 resample", (n_eeg, raw.n_times), "EEG channels x samples @ 256 Hz")
 
-# --- 6. Epochs: 200 ms windows, 100 ms step (50 % overlap) ---
+# --- 6. Epochs (50 % overlap) ---
 # Each action = 2 s fixation cross, then a 6 s block. Skip the first 1 s of movement and the first 2 s of rest.
 picks = mne.pick_types(raw.info, eeg=True)
 channels = [raw.ch_names[i] for i in picks]
@@ -93,17 +95,21 @@ data = raw.get_data(picks=picks).astype(np.float32)
 fs = int(raw.info["sfreq"])
 win = round(args.window * fs)
 step = round(args.step * fs)
-epochs, y, trials = [], [], []
-for k, (onset, cue) in enumerate(zip(raw.annotations.onset, raw.annotations.description)):
-    label = CLASS_OF_CUE.get(str(cue))
-    cue_sample = int(round(onset * fs))
-    if label is None:
+epochs, y, gestures, cues, trials = [], [], [], [], []
+for k, (onset, desc) in enumerate(zip(raw.annotations.onset, raw.annotations.description)):
+    m = re.fullmatch(r"Trigger#(\d+)", str(desc))
+    info = CUE_INFO.get(int(m.group(1))) if m else None
+    if info is None:
         continue
-    first = cue_sample + (2 if label == "rest" else 1) * fs
+    state, gesture = info
+    cue_sample = int(round(onset * fs))
+    first = cue_sample + (2 if state == "rest" else 1) * fs
     for start in range(first, cue_sample + 6 * fs - win + 1, step):  # last window ends at 6 s
         if start + win <= data.shape[1]:
             epochs.append(data[:, start:start + win])
-            y.append(label)
+            y.append(state)
+            gestures.append(gesture)
+            cues.append(int(m.group(1)))
             trials.append(k)  # trial id: lets the trainer keep overlapping windows together
 if not epochs:
     raise SystemExit("No epochs extracted.")
@@ -117,9 +123,9 @@ keep = (freqs >= low) & (freqs <= high)
 features = psd[..., keep].astype(np.float32)
 report("8 band crop", features.shape, f"epochs x channels x frequency bins ({low}-{high} Hz)  <- saved as X")
 
-path = out / f"{subject}_four-class_{args.band}.npz"
+path = out / f"{subject}_epochs_{args.band}.npz"
 np.savez_compressed(
-    path, X=features, y=np.array(y), groups=np.array([subject] * len(y)), trials=np.array(trials),
+    path, X=features, y=np.array(y), gesture=np.array(gestures), cues=np.array(cues), groups=np.array([subject] * len(y)), trials=np.array(trials),
     freqs=freqs[keep], channel_names=np.array(channels),
 )
 print(f"Saved {path}\nClass counts: {dict(zip(*np.unique(y, return_counts=True)))}")

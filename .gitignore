@@ -6,7 +6,7 @@
 # Data
 data/
 comparisons/
-artifacts/
+results/
 logs/
 NEW_dataset/
 OLD_dataset/
