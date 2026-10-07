@@ -19,7 +19,7 @@ from mne.preprocessing import ICA
 from mne_icalabel import label_components
 from scipy.signal import welch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 BANDS = {"1-45": (1, 45), "1-4": (1, 4), "4-8": (4, 8), "8-12": (8, 12), "12-30": (12, 30), "30-45": (30, 45)}
 

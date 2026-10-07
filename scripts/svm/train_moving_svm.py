@@ -15,7 +15,7 @@ from sklearn.svm import LinearSVC
 from utils import band_features, feature_names, group_importances, feature_importances, save_grouped_importances, feature_ablation, group_ablation, save_ablation, subject_normalize, report, save_confusion, load_bundles, grouped_holdout
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ABLATION_TOP_FEATURES = 20  # features removed one by one in the per-feature ablation plot
 
 
