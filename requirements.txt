@@ -3,6 +3,20 @@ requests>=2.32
 tqdm>=4.66
 python-dotenv>=1.0
 
+# MOVING exploratory analysis
+matplotlib>=3.8
+numpy>=1.26
+pandas>=2.2
+seaborn>=0.13
+pyedflib>=0.1.38
+
+# MOVING preprocessing and SVM (scripts/)
+mne>=1.8
+mne-icalabel>=0.7
+onnxruntime>=1.17
+scipy>=1.11
+scikit-learn>=1.4
+joblib>=1.3
 # TreeOfTrees (scripts/treeoftrees)
 numpy>=2.4
 mne>=1.12
