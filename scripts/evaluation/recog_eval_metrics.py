@@ -4,9 +4,8 @@ import csv
 from pathlib import Path
 
 import numpy as np
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-
-from recog_eval_data import BatchInfo, Trial
+from sklearn.metrics import (accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix,)
+from scripts.evaluation.recog_eval_data import BatchInfo, Trial
 
 
 # ================================================================
@@ -123,6 +122,7 @@ def report_predictions(
     scored_predictions = predictions[clean]
     classes = sorted(set(truth) | set(predictions))
     accuracy = accuracy_score(truth, scored_predictions)
+    balanced = balanced_accuracy_score(truth, scored_predictions)
     rest = truth == "noGesture"
     false_gesture_rate = np.mean(scored_predictions[rest] != "noGesture")
     recognized = raw_recognition_count(
@@ -148,6 +148,10 @@ def report_predictions(
     return {
         "labeled_batches": len(truth),
         "classification": accuracy,
+        "always_no_gesture": float(np.mean(rest)),
+        "balanced": balanced,
+        "truth": truth,
+        "predictions": scored_predictions,
         "recognition": recognized / len(test_trials),
         "false_gesture": false_gesture_rate,
         "flips_per_second": flips,
