@@ -4,7 +4,7 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from src.download import Downloader, ArchiveSpecs
+from bmieeg.download import Downloader, ArchiveSpecs
 
 
 # ================================================================

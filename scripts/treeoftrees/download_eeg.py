@@ -1,5 +1,5 @@
 from pathlib import Path
-from src.download import Downloader, MOVINGSpecs
+from bmieeg.download import Downloader, MOVINGSpecs
 
 ROOT = Path(__file__).resolve().parents[2]
 

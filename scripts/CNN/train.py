@@ -1,13 +1,13 @@
 """Minimal training loop for the CNN on dummy data, to check the pipeline runs end to end.
 
-Run from scripts/CNN:  python train.py
+Run from repo root:  poetry run python -m scripts.CNN.train
 """
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset, random_split
 
-from cnn import TCNN
+from scripts.CNN.cnn import TCNN
 
 # Dummy dataset size: windows of N_SAMPLES time points over N_CHANNELS electrodes
 N_WINDOWS, N_CHANNELS, N_SAMPLES, N_CLASSES = 256, 18, 256, 3
