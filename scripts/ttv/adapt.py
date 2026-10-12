@@ -2,7 +2,7 @@
 Makes a recording look like the data the board will deliver.
 
 The board filters the signal with a simple analog filter (first order, 0.5 to 45 Hz)
-and then measures it at a fixed rate. We do the same with every recording, ours and
+and then measures it at a fixed rate. We do the same with every recording, local and
 MOVING, so that the model is trained on data that looks like the data it will see.
 """
 # ================================================================
@@ -45,7 +45,7 @@ def open_recording(path: Path) -> tuple[mne.io.BaseRaw, float]:
         raw.drop_channels(MOVING_SKIP)
         return raw, 1e6
 
-    # Ours: a session folder. The numbers in the file are already microvolts,
+    # Local: a session folder. The numbers in the file are already microvolts,
     # even if MNE thinks they are volts
     raw = mne.io.read_raw_fif(next((path / "eeg").glob("*_eeg.fif")), preload=True, verbose="ERROR")
     raw.drop_channels(LOCAL_SKIP, on_missing="ignore")
@@ -114,7 +114,7 @@ if __name__ == "__main__":
     # 2. One recording of each kind, before and after
     local = local_trials.load_trials()[-1].folder
     moving = moving_trials.load_trials()[0].folder
-    for name, path in (("ours", local), ("MOVING", moving)):
+    for name, path in (("local", local), ("MOVING", moving)):
         raw, to_microvolts = open_recording(path)
         before = raw.get_data() * to_microvolts
         after, channels = adapt_recording(path)
