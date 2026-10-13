@@ -91,3 +91,4 @@ if __name__ == "__main__":
         print(f"{user:<12}{sum(counts.values()):>7}" + "".join(f"{counts[name]:>16}" for name in movements))
     lengths = [trial.end - trial.start for trial in trials]
     print(f"\nTrials used: {len(trials)}, length of a trial: {min(lengths):.1f} to {max(lengths):.1f} s")
+    

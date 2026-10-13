@@ -160,3 +160,4 @@ if __name__ == "__main__":
         print(f"\n{user}: {sum(counts.values())} trials, {len(counts)} movements")
         for movement, number in sorted(counts.items()):
             print(f"   {movement:<48}{number:>3}")
+            
