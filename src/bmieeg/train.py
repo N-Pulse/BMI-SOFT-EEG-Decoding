@@ -19,7 +19,7 @@ import numpy as np
 import joblib
 from sklearn.model_selection import GroupShuffleSplit, StratifiedShuffleSplit, StratifiedKFold
 
-from src.models import build_pipeline, load_dataset, evaluate_and_report
+from bmieeg.models import build_pipeline, load_dataset, evaluate_and_report
 
 
 def _ensure_dir(p: Path) -> None:

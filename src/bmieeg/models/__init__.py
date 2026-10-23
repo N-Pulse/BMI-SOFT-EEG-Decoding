@@ -1,6 +1,6 @@
 """Models and training pipeline: featureizers, classifiers, evaluation."""
 
-from src.models.pipeline import (
+from bmieeg.models.pipeline import (
     build_pipeline,
     load_dataset,
     load_npz_bundle,
