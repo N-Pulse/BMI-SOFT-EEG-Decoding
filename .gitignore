@@ -21,3 +21,6 @@ venv/
 
 # macOS
 .DS_Store
+
+# Pictures drawn by scripts/ttv (they live on Notion, not in the repo)
+artifacts/ttv_split/*.png
