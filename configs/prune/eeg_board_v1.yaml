@@ -1,10 +1,129 @@
 protocol_name: eeg_board_v1
 
-# Our own recordings (gel electrodes, read from data/bids) and MOVING (read from data/raw/moving/edf),
-# adapted to what the EEG board will deliver: the 14 electrodes of the board, a first-order
-# 0.2-80 Hz analogue filter, 160 Hz and a 24-bit converter.
+# Our own recordings (gel electrodes, raw .xdf files in data/bids/<date>/<sub>/<ses>/sourcedata) and MOVING
+# (.edf files in data/raw/moving/edf), adapted to what the EEG board will deliver: the 14 electrodes of the
+# board, a first-order 0.2-80 Hz analogue filter, 160 Hz and a 24-bit converter.
+# The steps up to find_trials only work on .xdf recordings, the trials of MOVING pass through them.
 # Every step before cut_trials works on a whole recording, like the board works on a continuous signal.
 steps:
+  - remove_session:
+      files_to_remove: []
+
+  # Keeps the EEG channels of the recording and its marker stream (the AUX and TRIGGER channels are dropped).
+  - signal_split:
+      signal: eeg
+
+  # Protocol version 1 is before 2025-11-21, version 2 from that day on.
+  - protocol_definer:
+      cuttoff_dates:
+        - 2025-11-21
+
+  # Version 2 writes every marker twice, only the first one is kept.
+  - marker_deduplicate:
+      max_gap_seconds: 0.05
+
+  # The markers are put on the samples of the signal and held until the next marker.
+  - signal_unwarp: {}
+
+  # The raw code of a marker is PABMM: phase, arm, baseline (orientation), movement.
+  # The names of the movements come from the events files of the sessions (the numbers differ
+  # between the two versions). Version 3 is MOVING: it has no raw markers.
+  - marker_unification:
+      source_schemas:
+        1:
+          phase_pos: 0
+          movement_slice: [3, 5]
+          phase_map:
+            1: "cue"
+            2: "prep"
+            3: "move"
+            4: "return"
+            5: "iti"
+          movement_groups:
+            "openhand_slow_3sec": [1]
+            "openhand_fast_1sec": [2]
+            "closetofist_allfingerstogether_slow_3sec": [3]
+            "closetofist_allfingerstogether_fast_1sec": [4]
+            "closetofist_allfingerstogether_3sec_maxforce": [6]
+            "open_fourfingers_together_3sec": [7]
+            "close_fourfingers_together_3sec": [8]
+            "wrist_palmarflexion_maxforce_3sec": [11]
+            "wrist_palmarflexion_normalforce_3sec": [12]
+            "wrist_dorsiflexion_normalforce_3sec": [13]
+            "wrist_dorsiflexion_maxforce_3sec": [14]
+            "grasp_cup_3sec": [15]
+            "grasp_donut_3sec": [16]
+          special_triggers: &special_triggers
+            9701: "resting state, eyes open"
+            9702: "resting state, eyes closed"
+            8888: "start LabRecorder"
+            8899: "experiment finished"
+            9999: "test marker"
+        2:
+          phase_pos: 0
+          movement_slice: [3, 5]
+          phase_map:
+            1: "cue"
+            3: "prep"
+            5: "move"
+            7: "return"
+            9: "iti"
+          # The movement 7 (only the thumb) is only in a test recording with one trial
+          movement_groups:
+            "openhand_slow_3sec": [1]
+            "closetofist_allfingerstogether_slow_3sec": [2]
+            "closetofist_allfingerstogether_3sec_maxforce": [3]
+            "wrist_palmarflexion_normalforce_3sec": [4]
+            "wrist_palmarflexion_maxforce_3sec": [5]
+            "wrist_dorsiflexion_normalforce_3sec": [8]
+            "wrist_dorsiflexion_maxforce_3sec": [9]
+            "grasp_donut_3sec": [10]
+            "grasp_cup_3sec": [11]
+          special_triggers: *special_triggers
+        3:
+          phase_pos: 0
+          movement_slice: [3, 5]
+          phase_map: {}
+          movement_groups: {}
+          special_triggers: {}
+      target:
+        phases:
+          "undefined": 0
+          "cue": 1
+          "prep": 2
+          "move": 3
+          "return": 4
+          "iti": 5
+          "resting state, eyes open": 6
+          "resting state, eyes closed": 7
+          "start LabRecorder": 8
+          "experiment finished": 9
+          "test marker": 10
+        movements: &movements
+          "undefined": 0
+          "close_fourfingers_together_3sec": 1
+          "closetofist_allfingerstogether_3sec_maxforce": 2
+          "closetofist_allfingerstogether_fast_1sec": 3
+          "closetofist_allfingerstogether_slow_3sec": 4
+          "grasp_cup_3sec": 5
+          "grasp_donut_3sec": 6
+          "open_fourfingers_together_3sec": 7
+          "openhand_fast_1sec": 8
+          "openhand_slow_3sec": 9
+          "wrist_dorsiflexion_maxforce_3sec": 10
+          "wrist_dorsiflexion_normalforce_3sec": 11
+          "wrist_palmarflexion_maxforce_3sec": 12
+          "wrist_palmarflexion_normalforce_3sec": 13
+          "open_close": 14
+          "wrist_rotation": 15
+          "finger_tapping": 16
+
+  # One trial is one repetition of one movement: from the prep signal to the end of a normal iti.
+  # A recording with fewer than 12 trials is a test recording and is dropped.
+  - find_trials:
+      movements: *movements
+      min_trials: 12
+
   # The electrodes of the board that have a signal (the others are flat or not in the cap).
   - channel_select:
       channels: [C1, C2, C3, C4, C5, C6, Cz, FC1, FC2, FC3, FC4, CP1, CP2, CPz]
@@ -35,25 +154,9 @@ steps:
   - adc_quantize:
       bits: 24
 
-  # One trial is one repetition of one movement. The code of the movement is written into the markers.
+  # The code of the movement is written into the markers of the trial.
   - cut_trials:
-      movement_codes:
-        close_fourfingers_together_3sec: 1
-        closetofist_allfingerstogether_3sec_maxforce: 2
-        closetofist_allfingerstogether_fast_1sec: 3
-        closetofist_allfingerstogether_slow_3sec: 4
-        grasp_cup_3sec: 5
-        grasp_donut_3sec: 6
-        open_fourfingers_together_3sec: 7
-        openhand_fast_1sec: 8
-        openhand_slow_3sec: 9
-        wrist_dorsiflexion_maxforce_3sec: 10
-        wrist_dorsiflexion_normalforce_3sec: 11
-        wrist_palmarflexion_maxforce_3sec: 12
-        wrist_palmarflexion_normalforce_3sec: 13
-        open_close: 14
-        wrist_rotation: 15
-        finger_tapping: 16
+      movement_codes: *movements
 
   # The trials of every person are split 70/15/15.
   - ttv_split:

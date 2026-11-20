@@ -33,6 +33,9 @@ GESTURES = {
 BLOCK_SECONDS = 6.0
 CROSS_SECONDS = 2.0
 
+# MOVING has no raw markers: its own protocol version has an empty marker schema in the protocol
+MOVING_PROTOCOL_VERSION = 3
+
 # The people of MOVING get a number from 1001, so they never have the number of one of ours
 SUBJECT_OFFSET = 1000
 
@@ -67,6 +70,7 @@ class MovingEdfLoader(FileLoader):
                 file_name=path.stem,
                 file_path=path,
                 directory_structure="moving",
+                protocol_version=MOVING_PROTOCOL_VERSION,
                 signal_type="eeg",
                 subject_id=SUBJECT_OFFSET + int(path.stem.split("_")[2]),
             )
