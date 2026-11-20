@@ -24,3 +24,6 @@ venv/
 
 # Pictures drawn by scripts/ttv (they live on Notion, not in the repo)
 artifacts/ttv_split/*.png
+
+# Profiles of the dry noise (made by scripts/ttv/dry_noise.py)
+artifacts/ttv_split/*.npz
