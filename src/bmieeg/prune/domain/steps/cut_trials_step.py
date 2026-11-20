@@ -23,12 +23,12 @@ class CutTrialsStep(PruneStep[TrialData, TrialData]):
     """
 
     name: ClassVar[str] = "cut_trials"
-    movement_codes: dict[str, int]  # name of the movement -> code from 1 to 99
+    movement_codes: dict[str, int]  # name of the movement -> code from 0 to 99 (0 is undefined)
 
     def __post_init__(self) -> None:
         codes = list(self.movement_codes.values())
-        if any(not 1 <= code <= 99 for code in codes):
-            raise ValueError("the code of a movement must be between 1 and 99")
+        if any(not 0 <= code <= 99 for code in codes):
+            raise ValueError("the code of a movement must be between 0 and 99")
         if len(set(codes)) != len(codes):
             raise ValueError("two movements have the same code")
 
