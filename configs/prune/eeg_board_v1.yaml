@@ -1,0 +1,69 @@
+protocol_name: eeg_board_v1
+
+# Our own recordings (gel electrodes, read from data/bids) and MOVING (read from data/raw/moving/edf),
+# adapted to what the EEG board will deliver: the 14 electrodes of the board, a first-order
+# 0.2-80 Hz analogue filter, 160 Hz and a 24-bit converter.
+# Every step before cut_trials works on a whole recording, like the board works on a continuous signal.
+steps:
+  # The electrodes of the board that have a signal (the others are flat or not in the cap).
+  - channel_select:
+      channels: [C1, C2, C3, C4, C5, C6, Cz, FC1, FC2, FC3, FC4, CP1, CP2, CPz]
+
+  # The two analogue stages of the board, one after the other, like the real filter (it only looks
+  # at the past).
+  - analogue_filter:
+      btype: highpass
+      cutoff: 0.2
+      order: 1
+      causal: true
+
+  - analogue_filter:
+      btype: lowpass
+      cutoff: 80.0
+      order: 1
+      causal: true
+
+  # The highest low-pass is 80 Hz, so the rate is 160 Hz (it is not fixed yet).
+  - resample:
+      sfreq: 160.0
+
+  # PLACEHOLDER: the range of the converter (+- microvolts) is the one of our local recorder,
+  # the real range of the board must be confirmed.
+  - to_full_scale:
+      full_scale_microvolts: 83886.08
+
+  - adc_quantize:
+      bits: 24
+
+  # One trial is one repetition of one movement. The code of the movement is written into the markers.
+  - cut_trials:
+      movement_codes:
+        close_fourfingers_together_3sec: 1
+        closetofist_allfingerstogether_3sec_maxforce: 2
+        closetofist_allfingerstogether_fast_1sec: 3
+        closetofist_allfingerstogether_slow_3sec: 4
+        grasp_cup_3sec: 5
+        grasp_donut_3sec: 6
+        open_fourfingers_together_3sec: 7
+        openhand_fast_1sec: 8
+        openhand_slow_3sec: 9
+        wrist_dorsiflexion_maxforce_3sec: 10
+        wrist_dorsiflexion_normalforce_3sec: 11
+        wrist_palmarflexion_maxforce_3sec: 12
+        wrist_palmarflexion_normalforce_3sec: 13
+        open_close: 14
+        wrist_rotation: 15
+        finger_tapping: 16
+
+  # The trials of every person are split 70/15/15.
+  - ttv_split:
+      train_ratio: 0.7
+      val_ratio: 0.15
+      test_ratio: 0.15
+      user_balance: true
+      seed: 42
+
+export:
+  - dataset:
+      fmt: .fif
+      zip_groups: false
